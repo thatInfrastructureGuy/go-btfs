@@ -106,12 +106,13 @@ func Analytics(cfgRoot string, node *core.IpfsNode, BTFSVersion, hValue string) 
 		}
 
 		dc.pn.Analytics = dc.config.Experimental.Analytics
+		dc.pn.DisableAutoUpdate = dc.config.Experimental.DisableAutoUpdate
 		dc.pn.FilestoreEnabled = dc.config.Experimental.FilestoreEnabled
+		dc.pn.GraphsyncEnabled = dc.config.Experimental.GraphsyncEnabled
 		dc.pn.HostsSyncEnabled = dc.config.Experimental.HostsSyncEnabled
 		dc.pn.HostsSyncMode = dc.config.Experimental.HostsSyncMode
 		dc.pn.Libp2PStreamMounting = dc.config.Experimental.Analytics
 		dc.pn.P2PHttpProxy = dc.config.Experimental.P2pHttpProxy
-		//dc.pn.PreferTls = dc.config.Experimental.PreferTLS
 		dc.pn.Quic = dc.config.Experimental.QUIC
 		dc.pn.RemoveOnUnpin = dc.config.Experimental.RemoveOnUnpin
 		dc.pn.ShardingEnabled = dc.config.Experimental.ShardingEnabled
@@ -194,7 +195,7 @@ func (dc *dcWrap) sendData(node *core.IpfsNode, config *config.Config) {
 		sb.WriteString(err.Error())
 		sb.WriteRune('\n')
 	}
-	dc.reportHealthAlert(node.Context(), config, sb.String())
+	log.Debug(sb.String())
 	// If complete prep failure we return
 	if err != nil {
 		return
@@ -273,30 +274,4 @@ func (dc *dcWrap) collectionAgent(node *core.IpfsNode) {
 			dc.sendData(node, config)
 		}
 	}
-}
-
-func (dc *dcWrap) reportHealthAlert(ctx context.Context, config *config.Config, failurePoint string) {
-	bo := backoff.NewExponentialBackOff()
-	bo.MaxElapsedTime = maxRetryTotal
-	backoff.Retry(func() error {
-		err := dc.doReportHealthAlert(ctx, config, failurePoint)
-		if err != nil {
-			log.Error("failed to report health alert to status server: ", err)
-		}
-		return err
-	}, bo)
-}
-
-func (dc *dcWrap) doReportHealthAlert(ctx context.Context, config *config.Config, failurePoint string) error {
-	n := new(pb.NodeHealth)
-	n.BtfsVersion = dc.pn.BtfsVersion
-	n.FailurePoint = failurePoint
-	n.NodeId = dc.pn.NodeId
-	n.TimeCreated = time.Now()
-
-	cb := cgrpc.StatusClient(config.Services.StatusServerDomain)
-	return cb.WithContext(ctx, func(ctx context.Context, client pb.StatusServiceClient) error {
-		_, err := client.CollectHealth(ctx, n)
-		return err
-	})
 }
