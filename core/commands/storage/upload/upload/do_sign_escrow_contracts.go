@@ -74,9 +74,8 @@ func newContract(rss *sessions.RenterSession, hostPid peer.ID, totalPay int64, c
 	}
 	var hostPubKey ic.PubKey
 	if hostPid != "" {
-		if pubKey, err := hostPid.ExtractPublicKey(); err == nil {
-			hostPubKey = pubKey
-		} else {
+		hostPubKey, err = hostPid.ExtractPublicKey()
+		if err != nil {
 			return nil, err
 		}
 	}

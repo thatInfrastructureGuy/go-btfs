@@ -13,19 +13,19 @@ import (
 	"github.com/tron-us/protobuf/proto"
 )
 
-func Submit(rss *sessions.RenterSession, fileSize int64, offlineSigning bool, isRenewContract bool) error {
+func Submit(rss *sessions.RenterSession, fileSize int64, offlineSigning bool, shardIndexes []int, isRenewContract bool) error {
 	if err := rss.To(sessions.RssToSubmitEvent); err != nil {
 		return err
 	}
-	res, err := doSubmit(rss, offlineSigning)
+	res, err := doSubmit(rss, shardIndexes, offlineSigning)
 	if err != nil {
 		return err
 	}
-	return pay(rss, res, fileSize, offlineSigning, isRenewContract)
+	return pay(rss, res, fileSize, shardIndexes, offlineSigning, isRenewContract)
 }
 
-func doSubmit(rss *sessions.RenterSession, offlineSigning bool) (*escrowpb.SignedSubmitContractResult, error) {
-	bs, t, err := prepareContracts(rss, rss.ShardHashes)
+func doSubmit(rss *sessions.RenterSession, shardIndexes []int, offlineSigning bool) (*escrowpb.SignedSubmitContractResult, error) {
+	bs, t, err := prepareContracts(rss, rss.ShardHashes, shardIndexes)
 	if err != nil {
 		return nil, err
 	}
@@ -48,11 +48,11 @@ func doSubmit(rss *sessions.RenterSession, offlineSigning bool) (*escrowpb.Signe
 	return submitContractRes, nil
 }
 
-func prepareContracts(rss *sessions.RenterSession, shardHashes []string) ([]*escrowpb.SignedEscrowContract, int64, error) {
+func prepareContracts(rss *sessions.RenterSession, shardHashes []string, shardIndexes []int) ([]*escrowpb.SignedEscrowContract, int64, error) {
 	var signedContracts []*escrowpb.SignedEscrowContract
 	var totalPrice int64
 	for i, hash := range shardHashes {
-		shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, hash, i)
+		shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, hash, shardIndexes[i])
 		if err != nil {
 			return nil, 0, err
 		}

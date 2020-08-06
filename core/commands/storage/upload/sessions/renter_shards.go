@@ -3,12 +3,12 @@ package sessions
 import (
 	"context"
 	"fmt"
-	renterpb "github.com/TRON-US/go-btfs/protos/renter"
 	"strings"
 	"time"
 
 	"github.com/TRON-US/go-btfs/core/commands/storage/helper"
 	uh "github.com/TRON-US/go-btfs/core/commands/storage/upload/helper"
+	renterpb "github.com/TRON-US/go-btfs/protos/renter"
 	shardpb "github.com/TRON-US/go-btfs/protos/shard"
 
 	guardpb "github.com/tron-us/go-btfs-common/protos/guard"
@@ -29,10 +29,12 @@ const (
 	renterShardContractsKey      = renterShardKey + "contracts"
 	renterShardAdditionalInfoKey = renterShardKey + "additional-info"
 
-	rshInitStatus      = "init"
-	rshContractStatus  = "contract"
-	rshErrorStatus     = "error"
-	rshToContractEvent = "to-contract"
+	rshInitStatus           = "init"
+	rshContractStatus       = "contract"
+	rshRenewContractStatus  = "renew-contract"
+	rshErrorStatus          = "error"
+	rshToContractEvent      = "to-contract"
+	rshToRenewContractEvent = "to-renew-contract"
 )
 
 var log = logging.Logger("sessions")
@@ -40,6 +42,7 @@ var log = logging.Logger("sessions")
 var (
 	renterShardFsmEvents = fsm.Events{
 		{Name: rshToContractEvent, Src: []string{rshInitStatus}, Dst: rshContractStatus},
+		{Name: rshToRenewContractEvent, Src: []string{rshContractStatus}, Dst: rshRenewContractStatus},
 	}
 	renterShardsInMem = cmap.New()
 )
@@ -76,7 +79,7 @@ func GetRenterShard(ctxParams *uh.ContextParams, ssId string, hash string, index
 	if err != nil {
 		return nil, err
 	}
-	if rs.fsm == nil && status.Status == rshInitStatus {
+	if rs.fsm == nil && status.Status != rshRenewContractStatus {
 		rs.fsm = fsm.NewFSM(status.Status, renterShardFsmEvents, fsm.Callbacks{
 			"enter_state": rs.enterState,
 		})
@@ -88,7 +91,9 @@ func (rs *RenterShard) enterState(e *fsm.Event) {
 	log.Infof("shard: %s:%s enter status: %s", rs.ssId, rs.hash, e.Dst)
 	switch e.Dst {
 	case rshContractStatus:
-		rs.doContract(e.Args[0].([]byte), e.Args[1].(*guardpb.Contract))
+		rs.SaveRegularContract(e.Args[0].([]byte), e.Args[1].(*guardpb.Contract))
+	case rshRenewContractStatus:
+		rs.SaveRenewContract(e.Args[0].([]byte), e.Args[1].(*guardpb.Contract))
 	}
 }
 
@@ -127,9 +132,19 @@ func extractSessionIDFromContractID(contractID string) (string, error) {
 	return ids[0], nil
 }
 
-func (rs *RenterShard) doContract(signedEscrowContract []byte, signedGuardContract *guardpb.Contract) error {
+func (rs *RenterShard) SaveRegularContract(signedEscrowContract []byte, signedGuardContract *guardpb.Contract) error {
+	err := rs.doContract(signedEscrowContract, signedGuardContract, rshContractStatus)
+	return err
+}
+
+func (rs *RenterShard) SaveRenewContract(signedEscrowContract []byte, signedGuardContract *guardpb.Contract) error {
+	err := rs.doContract(signedEscrowContract, signedGuardContract, rshRenewContractStatus)
+	return err
+}
+
+func (rs *RenterShard) doContract(signedEscrowContract []byte, signedGuardContract *guardpb.Contract, newStatus string) error {
 	status := &shardpb.Status{
-		Status: rshContractStatus,
+		Status: newStatus,
 	}
 	signedContracts := &shardpb.SignedContracts{
 		SignedEscrowContract: signedEscrowContract,
@@ -146,6 +161,10 @@ func (rs *RenterShard) doContract(signedEscrowContract []byte, signedGuardContra
 
 func (rs *RenterShard) Contract(signedEscrowContract []byte, signedGuardContract *guardpb.Contract) error {
 	return rs.fsm.Event(rshToContractEvent, signedEscrowContract, signedGuardContract)
+}
+
+func (rs *RenterShard) RenewContract(signedEscrowContract []byte, signedGuardContract *guardpb.Contract) error {
+	return rs.fsm.Event(rshToRenewContractEvent, signedEscrowContract, signedGuardContract)
 }
 
 func (rs *RenterShard) Contracts() (*shardpb.SignedContracts, error) {

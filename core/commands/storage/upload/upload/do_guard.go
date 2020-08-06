@@ -22,14 +22,14 @@ import (
 	"github.com/libp2p/go-libp2p-core/peer"
 )
 
-func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileSize int64, offlineSigning bool, isRenewContract bool) error {
+func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileSize int64, shardIndexes []int, offlineSigning bool, isRenewContract bool) error {
 	if err := rss.To(sessions.RssToGuardEvent); err != nil {
 		return err
 	}
 	cts := make([]*guardpb.Contract, 0)
 	selectedHosts := make([]string, 0)
 	for i, h := range rss.ShardHashes {
-		shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, h, i)
+		shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, h, shardIndexes[i])
 		if err != nil {
 			return err
 		}
@@ -45,7 +45,7 @@ func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileS
 			selectedHosts = append(selectedHosts, contracts.SignedGuardContract.HostPid)
 		}
 	}
-	fsStatus, err := newFileStatus(cts, rss.CtxParams.Cfg, cts[0].ContractMeta.RenterPid, rss.Hash, fileSize)
+	fsStatus, err := newFileStatus(cts, rss.CtxParams.Cfg, cts[0].ContractMeta.RenterPid, rss.Hash, fileSize, isRenewContract)
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,10 @@ func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileS
 	if err != nil {
 		return err
 	}
-	if len(selectedHosts) == 0 {
+	if isRenewContract && len(selectedHosts) == 0 {
+		if err := rss.To(sessions.RssToRenewCompleteEvent); err != nil {
+			return err
+		}
 		return nil
 	}
 	qs, err := guard.PrepFileChallengeQuestions(rss, fsStatus, rss.Hash, offlineSigning, fsStatus.RenterPid)
@@ -131,7 +134,7 @@ func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileS
 }
 
 func newFileStatus(contracts []*guardpb.Contract, configuration *config.Config,
-	renterId string, fileHash string, fileSize int64) (*guardpb.FileStoreStatus, error) {
+	renterId string, fileHash string, fileSize int64, isRenewContract bool) (*guardpb.FileStoreStatus, error) {
 	guardPid, escrowPid, err := getGuardAndEscrowPid(configuration)
 	if err != nil {
 		return nil, err
@@ -150,6 +153,9 @@ func newFileStatus(contracts []*guardpb.Contract, configuration *config.Config,
 		renterPid = contracts[0].RenterPid
 		if contracts[0].PreparerPid != contracts[0].RenterPid {
 			rentalState = guardpb.FileStoreStatus_PARTIAL_NEW
+		}
+		if isRenewContract {
+			rentalState = guardpb.FileStoreStatus_RECREATE
 		}
 	}
 

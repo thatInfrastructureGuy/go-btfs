@@ -3,16 +3,16 @@ package renew
 import (
 	"context"
 	"errors"
-	"github.com/TRON-US/go-btfs/core/commands/cmdenv"
-	"github.com/TRON-US/go-btfs/core/commands/storage/upload/upload"
 	"strconv"
 	"time"
 
 	"github.com/libp2p/go-libp2p-core/peer"
 
 	"github.com/TRON-US/go-btfs-cmds"
+	"github.com/TRON-US/go-btfs/core/commands/cmdenv"
 	uh "github.com/TRON-US/go-btfs/core/commands/storage/upload/helper"
 	"github.com/TRON-US/go-btfs/core/commands/storage/upload/sessions"
+	"github.com/TRON-US/go-btfs/core/commands/storage/upload/upload"
 	"github.com/tron-us/go-btfs-common/crypto"
 	guardpb "github.com/tron-us/go-btfs-common/protos/guard"
 	hubpb "github.com/tron-us/go-btfs-common/protos/hub"
@@ -74,13 +74,11 @@ and file hash need to be specified and passed on the command.
 			return errors.New("length of contracts is 0")
 		}
 		ssId, _ := uh.SplitContractId(contracts[0].ContractId)
-		shardIndexes := make([]int, 0)
-		shardHashes := make([]string, 0)
-		for _, contract := range contracts {
-			if contract.State == guardpb.Contract_UPLOADED {
-				shardHashes = append(shardHashes, contract.ShardHash)
-				shardIndexes = append(shardIndexes, int(contract.ShardIndex))
-			}
+		shardIndexes := make([]int, 30)
+		shardHashes := make([]string, 30)
+		for i, contract := range contracts {
+			shardHashes[i] = contract.ShardHash
+			shardIndexes[i] = int(contract.ShardIndex)
 		}
 		renewPeriod, err := strconv.ParseInt(req.Arguments[1], 10, 0)
 		if err != nil {
@@ -90,8 +88,11 @@ and file hash need to be specified and passed on the command.
 		if err != nil {
 			return err
 		}
-		rss, err := sessions.GetRenterSession(ctxParams, ssId, fileHash, shardHashes)
+		rss, err := sessions.GetRegularOrRenewRS(ctxParams, ssId, fileHash, shardHashes, true)
 		if err != nil {
+			return err
+		}
+		if err := rss.To(sessions.RssToRenewEvent); err != nil {
 			return err
 		}
 		m := contracts[0].ContractMeta

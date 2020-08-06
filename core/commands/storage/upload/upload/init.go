@@ -29,8 +29,6 @@ import (
 	"github.com/libp2p/go-libp2p-core/peer"
 )
 
-const Gap = 1
-
 type RecvContractParams struct {
 	ssId                      string
 	shardHash                 string
@@ -151,6 +149,7 @@ the shard and replies back to client for the next challenge step.`,
 		storageLength := int(guardContractMeta.RentEnd.Sub(guardContractMeta.RentStart).Hours() / 24)
 		if !isRegularContract {
 			halfSignedGuardContract.HostPid = ctxParams.N.Identity.Pretty()
+			halfSignedGuardContract.State = guardpb.Contract_RECREATED
 			if storeLen != storageLength {
 				halfSignedGuardContract.RentEnd = halfSignedGuardContract.RentStart.Add(time.Duration(storeLen*24) * time.Hour)
 			}
@@ -193,7 +192,7 @@ the shard and replies back to client for the next challenge step.`,
 		}
 
 		go func() {
-			var waitTime float64
+			//Guard will send request to host before one day, so remove timer.
 			recvContract := &RecvContractParams{
 				ssId:                      ssId,
 				shardHash:                 shardHash,
@@ -201,18 +200,7 @@ the shard and replies back to client for the next challenge step.`,
 				signedEscrowContractBytes: signedEscrowContractBytes,
 				signedGuardContractBytes:  signedGuardContractBytes,
 			}
-			if isRegularContract {
-				err = downloadShardAndChallenge(requestPid, ctxParams, recvContract, sourceId, halfSignedGuardContract, signedGuardContract)
-			} else {
-				interval := signedGuardContract.RentStart.Sub(time.Now()).Hours() / 24
-				if interval > Gap {
-					waitTime = (interval - Gap) * 24 * 60 * 60
-				}
-				select {
-				case <-time.After(time.Duration(waitTime) * time.Second):
-					err = downloadShardAndChallenge(requestPid, ctxParams, recvContract, sourceId, halfSignedGuardContract, signedGuardContract)
-				}
-			}
+			err = downloadShardAndChallenge(requestPid, ctxParams, recvContract, sourceId, halfSignedGuardContract, signedGuardContract)
 			if err != nil {
 				log.Error(err)
 			}

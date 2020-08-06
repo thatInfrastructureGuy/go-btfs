@@ -26,10 +26,12 @@ const (
 	RssPayPayinRequestSignedStatus           = "pay:payin-req-signed"
 	RssGuardStatus                           = "guard"
 	RssGuardFileMetaSignedStatus             = "guard:file-meta-signed"
+	RssRenewCompleteStatus                   = "renew-complete"
 	RssGuardQuestionsSignedStatus            = "guard:questions-signed"
 	RssWaitUploadStatus                      = "wait-upload"
 	RssWaitUploadReqSignedStatus             = "wait-upload:req-signed"
 	RssCompleteStatus                        = "complete"
+	RssRenewStatus                           = "renew"
 	RssErrorStatus                           = "error"
 
 	RssToSubmitEvent                          = "to-submit-event"
@@ -39,10 +41,12 @@ const (
 	RssToPayPayinRequestSignedEvent           = "to-pay:payin-req-signed-event"
 	RssToGuardEvent                           = "to-guard-event"
 	RssToGuardFileMetaSignedEvent             = "to-guard:file-meta-signed-event"
+	RssToRenewCompleteEvent                   = "to-renew-complete-event"
 	RssToGuardQuestionsSignedEvent            = "to-guard:questions-signed-event"
 	RssToWaitUploadEvent                      = "to-wait-upload-event"
 	RssToWaitUploadReqSignedEvent             = "to-wait-upload-signed-event"
 	RssToCompleteEvent                        = "to-complete-event"
+	RssToRenewEvent                           = "to-renew-event"
 	RssToErrorEvent                           = "to-error-event"
 
 	RenterSessionKey               = "/btfs/%s/renter/sessions/%s/"
@@ -53,20 +57,23 @@ const (
 	RenterSessionOfflineSigningKey = RenterSessionKey + "offline-signing"
 )
 
+var isRenewContract bool
 var (
 	renterSessionsInMem = cmap.New()
 	rssFsmEvents        = fsm.Events{
-		{Name: RssToSubmitEvent, Src: []string{RssInitStatus}, Dst: RssSubmitStatus},
+		{Name: RssToSubmitEvent, Src: []string{RssInitStatus, RssRenewStatus}, Dst: RssSubmitStatus},
 		{Name: RssToSubmitBalanceReqSignedEvent, Src: []string{RssSubmitStatus}, Dst: RssSubmitBalanceReqSignedStatus},
 		{Name: RssToSubmitLedgerChannelCommitSignedEvent, Src: []string{RssSubmitBalanceReqSignedStatus}, Dst: RssSubmitLedgerChannelCommitSignedStatus},
 		{Name: RssToPayEvent, Src: []string{RssSubmitLedgerChannelCommitSignedStatus}, Dst: RssPayStatus},
 		{Name: RssToPayPayinRequestSignedEvent, Src: []string{RssPayStatus}, Dst: RssPayPayinRequestSignedStatus},
 		{Name: RssToGuardEvent, Src: []string{RssPayPayinRequestSignedStatus}, Dst: RssGuardStatus},
 		{Name: RssToGuardFileMetaSignedEvent, Src: []string{RssGuardStatus}, Dst: RssGuardFileMetaSignedStatus},
+		{Name: RssToRenewCompleteEvent, Src: []string{RssGuardFileMetaSignedStatus}, Dst: RssRenewCompleteStatus},
 		{Name: RssToGuardQuestionsSignedEvent, Src: []string{RssGuardFileMetaSignedStatus}, Dst: RssGuardQuestionsSignedStatus},
 		{Name: RssToWaitUploadEvent, Src: []string{RssGuardQuestionsSignedStatus}, Dst: RssWaitUploadStatus},
 		{Name: RssToWaitUploadReqSignedEvent, Src: []string{RssWaitUploadStatus}, Dst: RssWaitUploadReqSignedStatus},
 		{Name: RssToCompleteEvent, Src: []string{RssWaitUploadReqSignedStatus}, Dst: RssCompleteStatus},
+		{Name: RssToRenewEvent, Src: []string{RssCompleteStatus}, Dst: RssRenewStatus},
 	}
 )
 
@@ -91,11 +98,17 @@ type RenterSession struct {
 	Cancel      context.CancelFunc
 }
 
+func GetRegularOrRenewRS(ctxParams *uh.ContextParams, ssId string, hash string, shardHashes []string, renewFlag bool) (*RenterSession,
+	error) {
+	isRenewContract = renewFlag
+	return GetRenterSession(ctxParams, ssId, hash, shardHashes)
+}
+
 func GetRenterSession(ctxParams *uh.ContextParams, ssId string, hash string, shardHashes []string) (*RenterSession,
 	error) {
 	k := fmt.Sprintf(RenterSessionInMemKey, ctxParams.N.Identity.Pretty(), ssId)
 	var rs *RenterSession
-	if tmp, ok := renterSessionsInMem.Get(k); ok {
+	if tmp, ok := renterSessionsInMem.Get(k); ok && !isRenewContract {
 		log.Debugf("get renter_session:%s from cache.", k)
 		rs = tmp.(*RenterSession)
 	} else {
@@ -114,7 +127,7 @@ func GetRenterSession(ctxParams *uh.ContextParams, ssId string, hash string, sha
 		if err != nil {
 			return nil, err
 		}
-		if status.Status != RssCompleteStatus {
+		if status.Status != RssRenewCompleteStatus {
 			rs.fsm = fsm.NewFSM(status.Status, rssFsmEvents, fsm.Callbacks{
 				"enter_state": rs.enterState,
 			})
@@ -125,12 +138,14 @@ func GetRenterSession(ctxParams *uh.ContextParams, ssId string, hash string, sha
 }
 
 var helperText = map[string]string{
-	RssInitStatus:       "Searching for recommended hosts…",
-	RssSubmitStatus:     "Hosts found! Checking wallet balance and submitting contracts to escrow.",
-	RssPayStatus:        "Contracts submitted! Confirming the escrow payment.",
-	RssGuardStatus:      "Payment successful! Preparing meta-data and challenge questions.",
-	RssWaitUploadStatus: "Confirming successful file shard storage by hosts.",
-	RssCompleteStatus:   "File storage successful!",
+	RssInitStatus:          "Searching for recommended hosts…",
+	RssSubmitStatus:        "Hosts found! Checking wallet balance and submitting contracts to escrow.",
+	RssPayStatus:           "Contracts submitted! Confirming the escrow payment.",
+	RssGuardStatus:         "Payment successful! Preparing meta-data and challenge questions.",
+	RssWaitUploadStatus:    "Confirming successful file shard storage by hosts.",
+	RssCompleteStatus:      "File storage successful!",
+	RssRenewStatus:         "Start to renew the contract.",
+	RssRenewCompleteStatus: "File renew completed!",
 }
 
 func (rs *RenterSession) enterState(e *fsm.Event) {
@@ -145,6 +160,11 @@ func (rs *RenterSession) enterState(e *fsm.Event) {
 		msg = e.Args[0].(error).Error()
 		rs.Cancel()
 	case RssCompleteStatus:
+		if isRenewContract {
+			return
+		}
+		rs.Cancel()
+	case RssRenewCompleteStatus:
 		rs.Cancel()
 	}
 	fmt.Printf("[%s] session: %s entered state: %s, msg: %s\n", time.Now().Format(time.RFC3339), rs.SsId, e.Dst, msg)
@@ -194,30 +214,32 @@ func (rs *RenterSession) Status() (*renterpb.RenterSessionStatus, error) {
 	return status, err
 }
 
-func (rs *RenterSession) GetCompleteShardsNum() (int, int, error) {
-	var completeNum, errorNum int
+func (rs *RenterSession) GetCompleteShardsNum(shardIndexes []int) (int, int, int, error) {
+	var completeNum, renewNum, errorNum int
 	status, err := rs.Status()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	for i, h := range status.ShardHashes {
-		shard, err := GetRenterShard(rs.CtxParams, rs.SsId, h, i)
+		shard, err := GetRenterShard(rs.CtxParams, rs.SsId, h, shardIndexes[i])
 		if err != nil {
 			log.Errorf("get renter shard error:", err.Error())
 			continue
 		}
 		s, err := shard.Status()
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, 0, err
 		}
 		if s.Status == rshContractStatus {
 			completeNum++
+		} else if s.Status == rshRenewContractStatus {
+			renewNum++
 		} else if status.Status == rshErrorStatus {
 			errorNum++
-			return completeNum, errorNum, nil
+			return completeNum, renewNum, errorNum, nil
 		}
 	}
-	return completeNum, errorNum, nil
+	return completeNum, renewNum, errorNum, nil
 }
 
 func (rs *RenterSession) To(event string, args ...interface{}) error {

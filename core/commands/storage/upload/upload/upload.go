@@ -148,7 +148,7 @@ Use status command to check for completion:
 				hp = helper.GetCustomizedHostsProvider(ctxParams, hostIDs)
 			}
 		}
-		rss, err := sessions.GetRenterSession(ctxParams, ssId, fileHash, shardHashes)
+		rss, err := sessions.GetRegularOrRenewRS(ctxParams, ssId, fileHash, shardHashes, false)
 		if err != nil {
 			return err
 		}

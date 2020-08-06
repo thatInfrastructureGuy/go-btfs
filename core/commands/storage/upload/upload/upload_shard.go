@@ -143,11 +143,11 @@ func UploadShard(rss *sessions.RenterSession, hp helper.IHostsProvider, price in
 					if err != nil {
 						return err
 					}
-					shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, shardHash, index)
+					shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, h, i)
 					if err != nil {
 						return err
 					}
-					_ = shard.Contract(newEscrowContractBytes, guardContract)
+					_ = shard.RenewContract(newEscrowContractBytes, guardContract)
 					return nil
 				}
 			}, helper.HandleShardBo)
@@ -163,13 +163,13 @@ func UploadShard(rss *sessions.RenterSession, hp helper.IHostsProvider, price in
 		for true {
 			select {
 			case <-tick:
-				completeNum, errorNum, err := rss.GetCompleteShardsNum()
+				completeNum, renewNum, errorNum, err := rss.GetCompleteShardsNum(shardIndexes)
 				if err != nil {
 					continue
 				}
 				log.Info("session", rss.SsId, "contractNum", completeNum, "errorNum", errorNum)
-				if completeNum == numShards {
-					err := Submit(rss, fileSize, offlineSigning, isRenewContract)
+				if completeNum == numShards || renewNum == numShards {
+					err := Submit(rss, fileSize, offlineSigning, shardIndexes, isRenewContract)
 					if err != nil {
 						_ = rss.To(sessions.RssToErrorEvent, err)
 					}

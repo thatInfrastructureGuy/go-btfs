@@ -117,6 +117,8 @@ func doRecv(req *cmds.Request, env cmds.Environment) (contractId string, err err
 			return contractId, err
 		}
 		escrowContractBytes = SignedEscrowContractBytes
+		_ = shard.SaveRenewContract(escrowContractBytes, guardContract)
+		return contractId, nil
 	}
 	_ = shard.Contract(escrowContractBytes, guardContract)
 	return
