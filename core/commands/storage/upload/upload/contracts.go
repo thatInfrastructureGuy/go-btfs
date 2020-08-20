@@ -323,7 +323,9 @@ func SyncContracts(ctx context.Context, n *core.IpfsNode, req *cmds.Request, env
 			latest = &c.SignedGuardContract.LastModifyTime
 		}
 	}
+	fmt.Println("start", time.Now())
 	updated, err := GetUpdatedGuardContracts(ctx, n, latest)
+	fmt.Println("updated contracts:", len(updated), time.Now())
 	if err != nil {
 		return err
 	}
@@ -340,6 +342,7 @@ func SyncContracts(ctx context.Context, n *core.IpfsNode, req *cmds.Request, env
 			contractsLog.Error("stale contracts clean up error:", err)
 		}
 	}
+	fmt.Println("total contracts:", len(cs), time.Now())
 	if len(cs) > 0 {
 		cts, err := ListContracts(n.Repo.Datastore(), n.Identity.Pretty(), role)
 		if err != nil {
@@ -469,11 +472,13 @@ func syncContractPayoutStatus(ctx context.Context, n *core.IpfsNode,
 					return err
 				}
 				in.Signature = sign
+				fmt.Println("sync index:", ci, time.Now())
 				sb, err := client.GetModifyPayOutStatusBatch(ctx, in)
 				if err != nil {
 					contractsLog.Error("get payout status batch error:", err)
 					return err
 				}
+				fmt.Println("finished sync index:", ci, time.Now())
 				var lastUpdated time.Time
 				for _, s := range sb.Status {
 					if _, ok := csIndexMap[s.ContractId]; !ok {
