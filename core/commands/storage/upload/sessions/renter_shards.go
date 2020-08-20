@@ -243,12 +243,14 @@ func SaveShardsContracts(ds datastore.Datastore, scs []*shardpb.SignedContracts,
 			activeFiles[gc.FileHash] = true
 		}
 	}
+	fmt.Println("ks len:", len(ks), time.Now())
 	if len(ks) > 0 {
 		err := Batch(ds, ks, vs)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
+	fmt.Println("done", time.Now())
 	var staleHashes []string
 	// compute what's stale
 	for ish, fhs := range invalidShards {

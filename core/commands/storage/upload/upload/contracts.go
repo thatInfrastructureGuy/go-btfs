@@ -332,10 +332,12 @@ func SyncContracts(ctx context.Context, n *core.IpfsNode, req *cmds.Request, env
 	if len(updated) > 0 {
 		// save and retrieve updated signed contracts
 		var stale []string
+		fmt.Println("save", time.Now())
 		cs, stale, err = sessions.SaveShardsContracts(n.Repo.Datastore(), cs, updated, n.Identity.Pretty(), role)
 		if err != nil {
 			return err
 		}
+		fmt.Println("stale contracts:", len(stale), "total:", len(cs), time.Now())
 		_, err := rm.RmDag(ctx, stale, n, req, env, true)
 		if err != nil {
 			// may have been cleaned up already, ignore
@@ -352,6 +354,7 @@ func SyncContracts(ctx context.Context, n *core.IpfsNode, req *cmds.Request, env
 		if err != nil {
 			return err
 		}
+		fmt.Println("results:", len(results), time.Now())
 		return Save(n.Repo.Datastore(), results, role)
 	}
 	return nil
