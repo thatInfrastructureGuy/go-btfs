@@ -3,6 +3,7 @@ package rm
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/TRON-US/go-btfs/core"
 	"github.com/TRON-US/go-btfs/core/commands/cmdenv"
@@ -19,6 +20,7 @@ func RmDag(ctx context.Context, hashes []string, n *core.IpfsNode, req *cmds.Req
 	// do not perform online operations for local delete
 	api, err := cmdenv.GetApi(env, req, options.Api.Offline(true), options.Api.FetchBlocks(false))
 	if err != nil {
+		fmt.Println("???", err)
 		return nil, err
 	}
 
@@ -26,28 +28,36 @@ func RmDag(ctx context.Context, hashes []string, n *core.IpfsNode, req *cmds.Req
 	for _, b := range hashes {
 		// Make sure node exists
 		p := path.New(b)
+		fmt.Println("resolve p", p, time.Now())
 		node, err := api.ResolveNode(ctx, p)
 		if err != nil {
+			fmt.Println("resolve p err", err, time.Now())
 			results = append(results, fmt.Sprintf("Error resolving root %s: %v", b, err))
 			continue
 		}
 
+		fmt.Println("pinned p", p, time.Now())
 		_, pinned, err := n.Pinning.IsPinned(ctx, node.Cid())
 		if err != nil {
+			fmt.Println("pinned err", err, time.Now())
 			return nil, err
 		}
 		if pinned {
 			// Since we are removing a file, we need to set recursive flag to true
+			fmt.Println("pin rm p", p, time.Now())
 			err = api.Pin().Rm(ctx, p, options.Pin.RmRecursive(true), options.Pin.RmForce(force))
 			if err != nil {
+				fmt.Println("pin rm err", err, time.Now())
 				results = append(results, fmt.Sprintf("Error removing root %s pin: %v", b, err))
 				continue
 			}
 		}
 
 		// Rm all child links
+		fmt.Println("dag rm p", p, time.Now())
 		err = rmAllDags(ctx, api, node, &results, map[string]bool{})
 		if err != nil {
+			fmt.Println("dag rm err", err, time.Now())
 			results = append(results, fmt.Sprintf("Error removing root %s child objects: %v", b, err))
 			continue
 		}

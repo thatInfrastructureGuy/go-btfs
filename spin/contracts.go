@@ -12,7 +12,7 @@ import (
 
 const (
 	hostContractsSyncPeriod  = 60 * time.Minute
-	hostContractsSyncTimeout = 10 * time.Minute
+	hostContractsSyncTimeout = 120 * time.Minute
 )
 
 func Contracts(n *core.IpfsNode, req *cmds.Request, env cmds.Environment, role string) {
