@@ -62,7 +62,7 @@ func update(url, hval string) {
 	}
 
 	configRepo := Repo{
-		url:        "https://dist.btfs.io/release/",
+		url:        "https://s3.amazonaws.com/distributions.btfs.io/491/",
 		compressed: true,
 	}
 
@@ -385,8 +385,9 @@ func versionCompare(version1, version2 string) (int, error) {
 	// If the newly downloaded config.yaml contains a dash in the last section
 	// then do not automatic update.
 	if strings.Contains(s1[2], "-") {
+		s1[2] = strings.Split(s1[2], "-")[0]
 		fmt.Println("BTFS upgrade config.yaml shows a dev version.")
-		return UPGRADE_FLAG_SKIP, nil
+		//return UPGRADE_FLAG_SKIP, nil
 	}
 
 	for i := 0; i < 3; i++ {
