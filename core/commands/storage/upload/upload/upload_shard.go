@@ -19,7 +19,6 @@ import (
 func UploadShard(rss *sessions.RenterSession, hp helper.IHostsProvider, price int64, shardSize int64,
 	storageLength int, rentStart time.Time,
 	offlineSigning bool, isRenewContract bool, renterId peer.ID, fileSize int64, shardIndexes []int, rp *RepairParams) {
-
 	var ca int64
 	var host string
 	for index, shardHash := range rss.ShardHashes {
@@ -57,7 +56,7 @@ func UploadShard(rss *sessions.RenterSession, hp helper.IHostsProvider, price in
 				go func() {
 					tmp := func() error {
 						escrowContractBytes, err := renterSignEscrowContract(rss, h, i, host, tp, 0, offlineSigning, isRenewContract,
-							renterId, contractId)
+							renterId, contractId, storageLength)
 						if err != nil {
 							log.Errorf("shard %s signs escrow_contract error: %s", h, err.Error())
 							return err
