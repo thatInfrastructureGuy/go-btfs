@@ -40,8 +40,7 @@ func Get(d ds.Datastore, key string, m proto.Message) error {
 	if err != nil {
 		return err
 	}
-	err = proto.Unmarshal(bytes, m)
-	return err
+	return proto.Unmarshal(bytes, m)
 }
 
 func Remove(d ds.Datastore, key string) error {
@@ -100,4 +99,41 @@ func ListFiles(d ds.Datastore, prefix string) ([][]byte, time.Time, error) {
 	}
 	latest = time.Unix(ts, 0)
 	return vs, latest, nil
+}
+
+func ListKeys(d ds.Datastore, prefix string, substrInKey ...string) ([]string, error) {
+	ks := make([]string, 0)
+	results, err := d.Query(query.Query{
+		Prefix:   prefix,
+		Filters:  []query.Filter{},
+		KeysOnly: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for entry := range results.Next() {
+		contains := true
+		for _, substr := range substrInKey {
+			contains = contains && strings.Contains(entry.Key, substr)
+		}
+		if contains {
+			ks = append(ks, entry.Key)
+		}
+	}
+	return ks, nil
+}
+
+func ClearStoreMeta(d ds.Datastore, prefix string) error {
+	//vs := make([][]byte, 0)
+	results, err := d.Query(query.Query{
+		Prefix:  prefix,
+		Filters: []query.Filter{},
+	})
+	if err != nil {
+		return err
+	}
+	for entry := range results.Next() {
+		Remove(d, entry.Key)
+	}
+	return nil
 }

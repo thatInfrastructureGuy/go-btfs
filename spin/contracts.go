@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/TRON-US/go-btfs/core/commands/storage"
+	"github.com/TRON-US/go-btfs/core/commands/storage/contracts"
 
 	cmds "github.com/TRON-US/go-btfs-cmds"
 	"github.com/TRON-US/go-btfs/core"
@@ -22,9 +22,9 @@ func Contracts(n *core.IpfsNode, req *cmds.Request, env cmds.Environment, role s
 		return
 	}
 	if cfg.Experimental.StorageHostEnabled {
-		go periodicHostSync(hostContractsSyncPeriod, hostContractsSyncTimeout, role+" contracts",
+		go periodicSync(hostContractsSyncPeriod, hostContractsSyncTimeout, role+" contracts",
 			func(ctx context.Context) error {
-				return storage.SyncContracts(ctx, n, req, env, role)
+				return contracts.SyncContracts(ctx, n, req, env, role)
 			})
 	}
 }

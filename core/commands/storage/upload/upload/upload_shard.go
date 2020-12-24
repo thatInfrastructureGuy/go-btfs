@@ -55,8 +55,7 @@ func UploadShard(rss *sessions.RenterSession, hp helper.IHostsProvider, price in
 				errChan := make(chan error, 2)
 				go func() {
 					tmp := func() error {
-						escrowContractBytes, err := renterSignEscrowContract(rss, h, i, host, tp, 0, offlineSigning, isRenewContract,
-							renterId, contractId, storageLength)
+						escrowContractBytes, err := renterSignEscrowContract(rss, h, i, host, tp, 0, offlineSigning, isRenewContract, renterId, contractId, storageLength)
 						if err != nil {
 							log.Errorf("shard %s signs escrow_contract error: %s", h, err.Error())
 							return err
@@ -111,7 +110,7 @@ func UploadShard(rss *sessions.RenterSession, hp helper.IHostsProvider, price in
 					}
 					go func() {
 						ctx, _ := context.WithTimeout(rss.Ctx, 10*time.Second)
-						_, err := remote.P2PCall(ctx, rss.CtxParams.N, hostPid, "/storage/upload/init",
+						_, err := remote.P2PCall(ctx, rss.CtxParams.N, rss.CtxParams.Api, hostPid, "/storage/upload/init",
 							rss.SsId,
 							rss.Hash,
 							h,
@@ -142,7 +141,8 @@ func UploadShard(rss *sessions.RenterSession, hp helper.IHostsProvider, price in
 					if err != nil {
 						return err
 					}
-					shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, h, i)
+					shard, err :=sessions.GetRenewRenterShard(rss.CtxParams, rss.SsId, h, i)
+					//shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, h, i)
 					if err != nil {
 						return err
 					}

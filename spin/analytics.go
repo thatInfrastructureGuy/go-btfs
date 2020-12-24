@@ -99,7 +99,8 @@ func Analytics(cfgRoot string, node *core.IpfsNode, BTFSVersion, hValue string) 
 		dc.pn.BtfsVersion = BTFSVersion
 		dc.pn.OsType = runtime.GOOS
 		dc.pn.ArchType = runtime.GOARCH
-		if storageMax, err := helper.CheckAndValidateHostStorageMax(cfgRoot, node.Repo, nil, true); err == nil {
+		if storageMax, err := helper.CheckAndValidateHostStorageMax(node.Context(), cfgRoot,
+			node.Repo, nil, true); err == nil {
 			dc.pn.StorageVolumeCap = storageMax
 		} else {
 			log.Warning(err.Error())
@@ -113,16 +114,35 @@ func Analytics(cfgRoot string, node *core.IpfsNode, BTFSVersion, hValue string) 
 		dc.pn.HostsSyncMode = dc.config.Experimental.HostsSyncMode
 		dc.pn.Libp2PStreamMounting = dc.config.Experimental.Analytics
 		dc.pn.P2PHttpProxy = dc.config.Experimental.P2pHttpProxy
-		dc.pn.Quic = dc.config.Experimental.QUIC
 		dc.pn.RemoveOnUnpin = dc.config.Experimental.RemoveOnUnpin
 		dc.pn.ShardingEnabled = dc.config.Experimental.ShardingEnabled
 		dc.pn.StorageClientEnabled = dc.config.Experimental.StorageClientEnabled
 		dc.pn.StorageHostEnabled = dc.config.Experimental.StorageHostEnabled
 		dc.pn.StrategicProviding = dc.config.Experimental.StrategicProviding
 		dc.pn.UrlStoreEnabled = dc.config.Experimental.UrlstoreEnabled
+		dc.pn.RepairHostEnabled = dc.config.Experimental.HostRepairEnabled
+		dc.pn.ChallengeHostEnabled = dc.config.Experimental.HostChallengeEnabled
 	}
 
+	dc.setRoles()
 	go dc.collectionAgent(node)
+}
+
+func (dc *dcWrap) setRoles() {
+	roles := make([]nodepb.NodeRole, 0)
+	if dc.pn.StorageClientEnabled {
+		roles = append(roles, nodepb.NodeRole_RENTER)
+	}
+	if dc.pn.StorageHostEnabled {
+		roles = append(roles, nodepb.NodeRole_HOST)
+	}
+	if dc.pn.RepairHostEnabled {
+		roles = append(roles, nodepb.NodeRole_REPAIRER)
+	}
+	if dc.pn.ChallengeHostEnabled {
+		roles = append(roles, nodepb.NodeRole_CHALLENGER)
+	}
+	dc.pn.Node_Settings.Roles = roles
 }
 
 // update gets the latest analytics and returns a list of errors for reporting if available
@@ -141,17 +161,27 @@ func (dc *dcWrap) update(node *core.IpfsNode) []error {
 		res = append(res, fmt.Errorf("failed to get node storage config: %s", err.Error()))
 	} else {
 		dc.pn.StoragePriceAsk = ns.StoragePriceAsk
+		dc.pn.StoragePriceDefault = ns.StoragePriceDefault
+		dc.pn.CustomizedPricing = ns.CustomizedPricing
 		dc.pn.BandwidthPriceAsk = ns.BandwidthPriceAsk
 		dc.pn.StorageTimeMin = ns.StorageTimeMin
 		dc.pn.BandwidthLimit = ns.BandwidthLimit
 		dc.pn.CollateralStake = ns.CollateralStake
+		dc.pn.RepairPriceDefault = ns.RepairPriceDefault
+		dc.pn.RepairPriceCustomized = ns.RepairPriceCustomized
+		dc.pn.RepairCustomizedPricing = ns.RepairCustomizedPricing
+		dc.pn.ChallengePriceDefault = ns.ChallengePriceDefault
+		dc.pn.ChallengePriceCustomized = ns.ChallengePriceCustomized
+		dc.pn.ChallengeCustomizedPricing = ns.ChallengeCustomizedPricing
 	}
 
 	dc.pn.UpTime = durationToSeconds(time.Since(dc.pn.TimeCreated))
 	if cpus, err := cpu.Percent(0, false); err != nil {
 		res = append(res, fmt.Errorf("failed to get uptime: %s", err.Error()))
 	} else {
-		dc.pn.CpuUsed = cpus[0]
+		if dc.pn.CpuUsed = 0; len(cpus) >= 1 {
+			dc.pn.CpuUsed = cpus[0]
+		}
 	}
 	dc.pn.MemoryUsed = m.HeapAlloc / uint64(units.KiB)
 	if storage, err := dc.node.Repo.GetStorageUsage(); err != nil {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	_ "expvar"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -20,6 +21,8 @@ import (
 	oldcmds "github.com/TRON-US/go-btfs/commands"
 	"github.com/TRON-US/go-btfs/core"
 	commands "github.com/TRON-US/go-btfs/core/commands"
+	"github.com/TRON-US/go-btfs/core/commands/storage/path"
+	"github.com/TRON-US/go-btfs/core/commands/storage/upload/helper"
 	corehttp "github.com/TRON-US/go-btfs/core/corehttp"
 	httpremote "github.com/TRON-US/go-btfs/core/corehttp/remote"
 	corerepo "github.com/TRON-US/go-btfs/core/corerepo"
@@ -32,6 +35,7 @@ import (
 	cmds "github.com/TRON-US/go-btfs-cmds"
 	config "github.com/TRON-US/go-btfs-config"
 	cserial "github.com/TRON-US/go-btfs-config/serialize"
+
 	multierror "github.com/hashicorp/go-multierror"
 	util "github.com/ipfs/go-ipfs-util"
 	mprome "github.com/ipfs/go-metrics-prometheus"
@@ -191,7 +195,7 @@ Headers.
 		cmds.BoolOption(migrateKwd, "If true, assume yes at the migrate prompt. If false, assume no.").WithDefault(true),
 		cmds.BoolOption(enablePubSubKwd, "Instantiate the btfs daemon with the experimental pubsub feature enabled."),
 		cmds.BoolOption(enableIPNSPubSubKwd, "Enable BTNS record distribution through pubsub; enables pubsub."),
-		cmds.BoolOption(enableMultiplexKwd, "Add the experimental 'go-multiplex' stream muxer to libp2p on construction.").WithDefault(true),
+		cmds.BoolOption(enableMultiplexKwd, "DEPRECATED"),
 		cmds.StringOption(hValueKwd, "H-value identifies the BitTorrent client this daemon is started by. None if not started by a BitTorrent client."),
 		cmds.BoolOption(enableDataCollection, "Allow BTFS to collect and send out node statistics."),
 		cmds.BoolOption(enableStartupTest, "Allow BTFS to perform start up test.").WithDefault(false),
@@ -217,6 +221,17 @@ func defaultMux(path string) corehttp.ServeOption {
 }
 
 func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment) (_err error) {
+
+	cctx := env.(*oldcmds.Context)
+	_, b := os.LookupEnv(path.BtfsPathKey)
+	if !b {
+		c := cctx.ConfigRoot
+		if bs, err := ioutil.ReadFile(path.PropertiesFileName); err == nil && len(bs) > 0 {
+			c = string(bs)
+		}
+		cctx.ConfigRoot = c
+	}
+
 	// Inject metrics before we do anything
 	err := mprome.Inject()
 	if err != nil {
@@ -245,8 +260,6 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 		}
 	}
 
-	cctx := env.(*oldcmds.Context)
-
 	// check transport encryption flag.
 	unencrypted, _ := req.Options[unencryptTransportKwd].(bool)
 	if unencrypted {
@@ -271,7 +284,7 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 				}
 			}
 
-			if err = doInit(os.Stdout, cfg, false, nBitsForKeypairDefault, profiles, conf,
+			if err = doInit(os.Stdout, cfg, false, utilmain.NBitsForKeypairDefault, profiles, conf,
 				keyTypeDefault, "", "", false); err != nil {
 				return err
 			}
@@ -304,7 +317,7 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 		if err != nil {
 			return err
 		}
-		// Set to get migrations to work without hacks
+		// Set to get ipfs' fs-repo-migrations to work without hacks
 		os.Setenv("IPFS_PATH", curPath)
 		err = migrate.RunMigration(fsrepo.RepoVersion)
 		if err != nil {
@@ -332,6 +345,10 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 		return err
 	}
 
+	// Print self information for logging and debugging purposes
+	fmt.Printf("Repo location: %s\n", cctx.ConfigRoot)
+	fmt.Printf("Peer identity: %s\n", cfg.Identity.PeerID)
+
 	hValue, hasHval := req.Options[hValueKwd].(string)
 
 	migrated := config.MigrateConfig(cfg, inited, hasHval)
@@ -346,7 +363,10 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 	offline, _ := req.Options[offlineKwd].(bool)
 	ipnsps, _ := req.Options[enableIPNSPubSubKwd].(bool)
 	pubsub, _ := req.Options[enablePubSubKwd].(bool)
-	mplex, _ := req.Options[enableMultiplexKwd].(bool)
+	if _, hasMplex := req.Options[enableMultiplexKwd]; hasMplex {
+		log.Errorf("The mplex multiplexer has been enabled by default and the experimental %s flag has been removed.")
+		log.Errorf("To disable this multiplexer, please configure `Swarm.Transports.Multiplexers'.")
+	}
 
 	// Btfs auto update.
 	url := fmt.Sprint(strings.Split(cfg.Addresses.API[0], "/")[2], ":", strings.Split(cfg.Addresses.API[0], "/")[4])
@@ -366,7 +386,6 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 		ExtraOpts: map[string]bool{
 			"pubsub": pubsub,
 			"ipnsps": ipnsps,
-			"mplex":  mplex,
 		},
 		//TODO(Kubuxu): refactor Online vs Offline by adding Permanent vs Ephemeral
 	}
@@ -529,9 +548,14 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 		node.Repo.SetConfigKey("Experimental.Analytics", dc)
 	}
 	// Spin jobs in the background
+	spin.RenterSessions(req, env)
 	spin.Analytics(cctx.ConfigRoot, node, version.CurrentVersionNumber, hValue)
 	spin.Hosts(node, env)
 	spin.Contracts(node, req, env, nodepb.ContractStat_HOST.String())
+	if params, err := helper.ExtractContextParams(req, env); err == nil {
+		spin.NewWalletWrap(params).UpdateStatus()
+	}
+	spin.BttTransactions(node, env)
 
 	// Give the user some immediate feedback when they hit C-c
 	go func() {

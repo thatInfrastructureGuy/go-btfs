@@ -2,13 +2,16 @@ package sessions
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/TRON-US/go-btfs/core/commands/storage/helper"
 	uh "github.com/TRON-US/go-btfs/core/commands/storage/upload/helper"
 	renterpb "github.com/TRON-US/go-btfs/protos/renter"
+	sessionpb "github.com/TRON-US/go-btfs/protos/session"
 
 	"github.com/tron-us/protobuf/proto"
 
@@ -49,7 +52,8 @@ const (
 	RssToRenewEvent                           = "to-renew-event"
 	RssToErrorEvent                           = "to-error-event"
 
-	RenterSessionKey               = "/btfs/%s/renter/sessions/%s/"
+	RenterSessionPrefix            = "/btfs/%s/renter/sessions/"
+	RenterSessionKey               = RenterSessionPrefix + "%s/"
 	RenterSessionInMemKey          = RenterSessionKey
 	RenterSessionStatusKey         = RenterSessionKey + "status"
 	RenterSessionAdditionalInfoKey = RenterSessionKey + "additional-info"
@@ -57,7 +61,7 @@ const (
 	RenterSessionOfflineSigningKey = RenterSessionKey + "offline-signing"
 )
 
-var isRenewContract bool
+var isRenewContract = false
 var (
 	renterSessionsInMem = cmap.New()
 	rssFsmEvents        = fsm.Events{
@@ -68,12 +72,13 @@ var (
 		{Name: RssToPayPayinRequestSignedEvent, Src: []string{RssPayStatus}, Dst: RssPayPayinRequestSignedStatus},
 		{Name: RssToGuardEvent, Src: []string{RssPayPayinRequestSignedStatus}, Dst: RssGuardStatus},
 		{Name: RssToGuardFileMetaSignedEvent, Src: []string{RssGuardStatus}, Dst: RssGuardFileMetaSignedStatus},
-		{Name: RssToRenewCompleteEvent, Src: []string{RssGuardFileMetaSignedStatus}, Dst: RssRenewCompleteStatus},
 		{Name: RssToGuardQuestionsSignedEvent, Src: []string{RssGuardFileMetaSignedStatus}, Dst: RssGuardQuestionsSignedStatus},
 		{Name: RssToWaitUploadEvent, Src: []string{RssGuardQuestionsSignedStatus}, Dst: RssWaitUploadStatus},
 		{Name: RssToWaitUploadReqSignedEvent, Src: []string{RssWaitUploadStatus}, Dst: RssWaitUploadReqSignedStatus},
 		{Name: RssToCompleteEvent, Src: []string{RssWaitUploadReqSignedStatus}, Dst: RssCompleteStatus},
-		{Name: RssToRenewEvent, Src: []string{RssCompleteStatus}, Dst: RssRenewStatus},
+
+		{Name: RssToRenewEvent, Src: []string{RssCompleteStatus, RssRenewCompleteStatus}, Dst: RssRenewStatus},
+		{Name: RssToRenewCompleteEvent, Src: []string{RssGuardFileMetaSignedStatus}, Dst: RssRenewCompleteStatus},
 	}
 )
 
@@ -98,10 +103,16 @@ type RenterSession struct {
 	Cancel      context.CancelFunc
 }
 
-func GetRegularOrRenewRS(ctxParams *uh.ContextParams, ssId string, hash string, shardHashes []string, renewFlag bool) (*RenterSession,
+func GetRenewRS(ctxParams *uh.ContextParams, ssId string, hash string, shardHashes []string) (*RenterSession,
 	error) {
-	isRenewContract = renewFlag
-	return GetRenterSession(ctxParams, ssId, hash, shardHashes)
+	isRenewContract = true
+	rss, err := GetRenterSession(ctxParams, ssId, hash, shardHashes)
+	if err != nil {
+		isRenewContract = false
+		return nil, err
+	}
+	isRenewContract = false
+	return rss, nil
 }
 
 func GetRenterSession(ctxParams *uh.ContextParams, ssId string, hash string, shardHashes []string) (*RenterSession,
@@ -127,7 +138,15 @@ func GetRenterSession(ctxParams *uh.ContextParams, ssId string, hash string, sha
 		if err != nil {
 			return nil, err
 		}
-		if status.Status != RssRenewCompleteStatus {
+		if rs.Hash = hash; hash == "" {
+			rs.Hash = status.Hash
+		}
+		if rs.ShardHashes = shardHashes; shardHashes == nil || len(shardHashes) == 0 {
+			rs.ShardHashes = status.ShardHashes
+		}
+		// is renew contract, new fsm
+		// is not renew contract and is not complete status, new fsm
+		if isRenewContract || status.Status != RssCompleteStatus {
 			rs.fsm = fsm.NewFSM(status.Status, rssFsmEvents, fsm.Callbacks{
 				"enter_state": rs.enterState,
 			})
@@ -160,12 +179,11 @@ func (rs *RenterSession) enterState(e *fsm.Event) {
 		msg = e.Args[0].(error).Error()
 		rs.Cancel()
 	case RssCompleteStatus:
-		if isRenewContract {
-			return
+		if !isRenewContract {
+			rs.Cancel()
 		}
-		rs.Cancel()
-	case RssRenewCompleteStatus:
-		rs.Cancel()
+		//case RssRenewCompleteStatus:
+		//	rs.Cancel()
 	}
 	fmt.Printf("[%s] session: %s entered state: %s, msg: %s\n", time.Now().Format(time.RFC3339), rs.SsId, e.Dst, msg)
 	err := Batch(rs.CtxParams.N.Repo.Datastore(),
@@ -271,4 +289,59 @@ func (rs *RenterSession) OfflineSigning() (*renterpb.OfflineSigning, error) {
 		return nil, err
 	}
 	return signingData, nil
+}
+
+type RenterSessionsCursor struct {
+	ctxParam *uh.ContextParams
+	keys     []string
+}
+
+func GetRenterSessionsCursor(ctxParam *uh.ContextParams) (*RenterSessionsCursor, error) {
+	prefix := fmt.Sprintf(RenterSessionPrefix, ctxParam.N.Identity.String())
+	ks, err := ListKeys(ctxParam.N.Repo.Datastore(), prefix, "/status")
+	if err != nil {
+		return nil, err
+	}
+	return &RenterSessionsCursor{
+		ctxParam: ctxParam,
+		keys:     ks,
+	}, nil
+}
+
+func (r *RenterSessionsCursor) nextKey() string {
+	if len(r.keys) == 0 {
+		return ""
+	}
+	result := r.keys[0]
+	r.keys = r.keys[1:]
+	return result
+}
+
+func (r *RenterSessionsCursor) NextSession(status string) (*RenterSession, error) {
+	key := r.nextKey()
+	for ; key != ""; key = r.nextKey() {
+		s := &sessionpb.Status{}
+		if err := Get(r.ctxParam.N.Repo.Datastore(), key, s); err == nil {
+			if s.Status == status {
+				return GetRenterSession(r.ctxParam, getSessionId(key), "", make([]string, 0))
+			}
+		}
+	}
+	return nil, errors.New("can not get any session")
+}
+
+var sessionIdPattern = func() *regexp.Regexp {
+	p, err := regexp.Compile(".+[/]([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12})[/]status")
+	if err != nil {
+		log.Error(err)
+		return &regexp.Regexp{}
+	}
+	return p
+}()
+
+func getSessionId(key string) string {
+	if m := sessionIdPattern.MatchString(key); m {
+		return sessionIdPattern.FindStringSubmatch(key)[1]
+	}
+	return ""
 }

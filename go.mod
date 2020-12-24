@@ -19,15 +19,14 @@ require (
 	github.com/alecthomas/units v0.0.0-20190717042225-c3de453c63f4
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/bren2010/proquint v0.0.0-20160323162903-38337c27106d
-	github.com/btcsuite/btcutil v1.0.2
+	github.com/btcsuite/btcutil v1.0.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.0.2
 	github.com/cmars/basen v0.0.0-20150613233007-fe3947df716e // indirect
 	github.com/coreos/go-systemd/v22 v22.0.0
 	github.com/dustin/go-humanize v1.0.0
 	github.com/elgris/jsondiff v0.0.0-20160530203242-765b5c24c302
-	github.com/ethereum/go-ethereum v1.9.17
 	github.com/fsnotify/fsnotify v1.4.9
-	github.com/gabriel-vasile/mimetype v1.1.0 // indirect
+	github.com/gabriel-vasile/mimetype v1.1.0
 	github.com/go-bindata/go-bindata/v3 v3.1.3
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/mock v1.4.3 // indirect
@@ -49,7 +48,7 @@ require (
 	github.com/ipfs/go-filestore v0.0.3
 	github.com/ipfs/go-fs-lock v0.0.5
 	github.com/ipfs/go-graphsync v0.0.5
-	github.com/ipfs/go-ipfs v0.6.0 // indirect
+	github.com/ipfs/go-ipfs v0.6.0
 	github.com/ipfs/go-ipfs-blockstore v0.1.4
 	github.com/ipfs/go-ipfs-ds-help v0.1.1
 	github.com/ipfs/go-ipfs-exchange-interface v0.0.1
@@ -84,7 +83,7 @@ require (
 	github.com/libp2p/go-libp2p-kbucket v0.4.2
 	github.com/libp2p/go-libp2p-loggables v0.1.0
 	github.com/libp2p/go-libp2p-mplex v0.2.3
-	github.com/libp2p/go-libp2p-noise v0.1.1 // indirect
+	github.com/libp2p/go-libp2p-noise v0.1.1
 	github.com/libp2p/go-libp2p-peerstore v0.2.6
 	github.com/libp2p/go-libp2p-pubsub v0.3.1
 	github.com/libp2p/go-libp2p-pubsub-router v0.3.0
@@ -96,11 +95,10 @@ require (
 	github.com/libp2p/go-libp2p-testing v0.1.1
 	github.com/libp2p/go-libp2p-tls v0.1.3
 	github.com/libp2p/go-libp2p-yamux v0.2.8
-	github.com/libp2p/go-maddr-filter v0.0.5
 	github.com/libp2p/go-socket-activation v0.0.2
-	github.com/libp2p/go-tcp-transport v0.2.0 // indirect
+	github.com/libp2p/go-tcp-transport v0.2.0
 	github.com/libp2p/go-testutil v0.1.0
-	github.com/libp2p/go-ws-transport v0.3.1 // indirect
+	github.com/libp2p/go-ws-transport v0.3.1
 	github.com/looplab/fsm v0.1.0
 	github.com/markbates/pkger v0.17.0
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
@@ -113,16 +111,15 @@ require (
 	github.com/multiformats/go-multiaddr-net v0.1.5
 	github.com/multiformats/go-multibase v0.0.3
 	github.com/multiformats/go-multihash v0.0.13
-	github.com/natefinch/lumberjack v2.0.0+incompatible
 	github.com/opentracing/opentracing-go v1.1.0
 	github.com/orcaman/concurrent-map v0.0.0-20190826125027-8c72a8bb44f6
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.6.0
 	github.com/shirou/gopsutil v2.20.7+incompatible
-	github.com/status-im/keycard-go v0.0.0-20190316090335-8537d3370df4 // indirect
+	github.com/status-im/keycard-go v0.0.0-20190316090335-8537d3370df4
 	github.com/stretchr/testify v1.6.1
 	github.com/syndtr/goleveldb v1.0.1-0.20190923125748-758128399b1d
-	github.com/thedevsaddam/gojsonq/v2 v2.5.2 // indirect
+	github.com/thedevsaddam/gojsonq/v2 v2.5.2
 	github.com/tron-us/go-btfs-common v0.7.0
 	github.com/tron-us/go-common/v2 v2.2.1
 	github.com/tron-us/protobuf v1.3.4
@@ -134,11 +131,11 @@ require (
 	github.com/whyrusleeping/tar-utils v0.0.0-20180509141711-8c6c8ba81d5c
 	go.uber.org/fx v1.12.0
 	go.uber.org/zap v1.15.0
-	go4.org v0.0.0-20200411211856-f5505b9728dd // indirect
+	go4.org v0.0.0-20200411211856-f5505b9728dd
 	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
 	golang.org/x/sys v0.0.0-20200523222454-059865788121
 	gopkg.in/cheggaaa/pb.v1 v1.0.28
-	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 	gopkg.in/yaml.v2 v2.2.8
 	launchpad.net/gocheck v0.0.0-20140225173054-000000000087 // indirect
 )

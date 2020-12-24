@@ -3,7 +3,6 @@ package upload
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/TRON-US/go-btfs/core/commands/storage/upload/guard"
@@ -19,7 +18,6 @@ import (
 
 	"github.com/gogo/protobuf/proto"
 	cidlib "github.com/ipfs/go-cid"
-	"github.com/libp2p/go-libp2p-core/peer"
 )
 
 func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileSize int64, shardIndexes []int, offlineSigning bool, isRenewContract bool) error {
@@ -41,11 +39,12 @@ func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileS
 		contracts.SignedGuardContract.EscrowSignedTime = res.Result.EscrowSignedTime
 		contracts.SignedGuardContract.LastModifyTime = time.Now()
 		cts = append(cts, contracts.SignedGuardContract)
-		if !isRenewContract {
+		//if !isRenewContract {
 			selectedHosts = append(selectedHosts, contracts.SignedGuardContract.HostPid)
-		}
+		//}
+		fmt.Println("contracts.SignedGuardContract Time", contracts.SignedGuardContract.RentStart, contracts.SignedGuardContract.RentEnd)
 	}
-	fsStatus, err := newFileStatus(cts, rss.CtxParams.Cfg, cts[0].ContractMeta.RenterPid, rss.Hash, fileSize, isRenewContract)
+	fsStatus, err := NewFileStatus(cts, rss.CtxParams.Cfg, cts[0].ContractMeta.RenterPid, rss.Hash, fileSize, isRenewContract)
 	if err != nil {
 		return err
 	}
@@ -87,53 +86,46 @@ func doGuard(rss *sessions.RenterSession, res *escrowpb.SignedPayinResult, fileS
 	if err := rss.To(sessions.RssToGuardFileMetaSignedEvent); err != nil {
 		return err
 	}
+
+	fmt.Println("isRenewContract", isRenewContract)
+	fmt.Println("sessions.RssToGuardFileMetaSignedEvent")
+
+	if isRenewContract {
+		fmt.Println("fsStatus", fsStatus)
+	}
+
 	fsStatus, err = submitFileMetaHelper(rss.Ctx, rss.CtxParams.Cfg, fsStatus, signBytes)
 	if err != nil {
 		return err
 	}
-	if isRenewContract && len(selectedHosts) == 0 {
-		if err := rss.To(sessions.RssToRenewCompleteEvent); err != nil {
+
+	//if isRenewContract && len(selectedHosts) == 0 {
+	//	if err := rss.To(sessions.RssToRenewCompleteEvent); err != nil {
+	//		return err
+	//	}
+	//	return nil
+	//}
+
+	if !isRenewContract {
+		qs, err := guard.PrepFileChallengeQuestions(rss, fsStatus, rss.Hash, offlineSigning, fsStatus.RenterPid)
+		if err != nil {
 			return err
 		}
-		return nil
-	}
-	qs, err := guard.PrepFileChallengeQuestions(rss, fsStatus, rss.Hash, offlineSigning, fsStatus.RenterPid)
-	if err != nil {
-		return err
-	}
-	fcid, err := cidlib.Parse(rss.Hash)
-	if err != nil {
-		return err
-	}
-	err = guard.SendChallengeQuestions(rss.Ctx, rss.CtxParams.Cfg, fcid, qs)
-	if err != nil {
-		return fmt.Errorf("failed to send challenge questions to guard: [%v]", err)
-	}
-	go func() {
-		for {
-			select {
-			case <-rss.Ctx.Done():
-				return
-			default:
-				wg := sync.WaitGroup{}
-				for _, h := range selectedHosts {
-					wg.Add(1)
-					go func(host string) {
-						ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
-						id, _ := peer.IDB58Decode(host)
-						rss.CtxParams.Api.Swarm().Connect(ctx, peer.AddrInfo{ID: id})
-						wg.Done()
-					}(h)
-				}
-				wg.Wait()
-				time.Sleep(5 * time.Second)
-			}
+		fcid, err := cidlib.Parse(rss.Hash)
+		if err != nil {
+			return err
 		}
-	}()
-	return waitUpload(rss, offlineSigning, fsStatus.RenterPid)
+		err = guard.SendChallengeQuestions(rss.Ctx, rss.CtxParams.Cfg, fcid, qs)
+		if err != nil {
+			return fmt.Errorf("failed to send challenge questions to guard: [%v]", err)
+		}
+	}
+
+	return waitCompleteState(rss, offlineSigning, fsStatus, false, isRenewContract)
 }
 
-func newFileStatus(contracts []*guardpb.Contract, configuration *config.Config,
+
+func NewFileStatus(contracts []*guardpb.Contract, configuration *config.Config,
 	renterId string, fileHash string, fileSize int64, isRenewContract bool) (*guardpb.FileStoreStatus, error) {
 	guardPid, escrowPid, err := getGuardAndEscrowPid(configuration)
 	if err != nil {
@@ -217,7 +209,7 @@ func submitFileStatus(ctx context.Context, cfg *config.Config,
 			return err
 		}
 		if res.Code != guardpb.ResponseCode_SUCCESS {
-			return fmt.Errorf("failed to execute submit file status to gurad: %v", res.Message)
+			return fmt.Errorf("failed to execute submit file status to guard: %v", res.Message)
 		}
 		return nil
 	})

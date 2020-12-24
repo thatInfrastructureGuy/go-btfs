@@ -82,21 +82,38 @@ func GetHostStorageConfigForPeer(node *core.IpfsNode, peerID string) (*nodepb.No
 // GetHostStorageConfig checks if locally is storing a config, if yes, returns it,
 // otherwise, queries hub to retrieve the latest default config.
 func GetHostStorageConfig(ctx context.Context, node *core.IpfsNode) (*nodepb.Node_Settings, error) {
+	return GetHostStorageConfigHelper(ctx, node, false)
+}
+
+// GetHostStorageConfigHelper checks if locally is storing a config, if yes, returns it,
+// otherwise, queries hub to retrieve the latest default config.
+// If syncHub is on, force a sync from Hub to retrieve latest information.
+func GetHostStorageConfigHelper(ctx context.Context, node *core.IpfsNode,
+	syncHub bool) (*nodepb.Node_Settings, error) {
 	ns, err := GetHostStorageConfigForPeer(node, node.Identity.Pretty())
 	if err != nil && err != ds.ErrNotFound {
 		return nil, fmt.Errorf("cannot get current host storage settings: %s", err.Error())
 	}
 	// Exists
-	if err == nil {
+	if err == nil && !syncHub {
 		return ns, nil
 	}
 	cfg, err := node.Repo.Config()
 	if err != nil {
 		return nil, err
 	}
-	ns, err = hub.GetHostSettings(ctx, cfg.Services.HubDomain, node.Identity.Pretty())
+	hns, err := hub.GetHostSettings(ctx, cfg.Services.HubDomain, node.Identity.Pretty())
 	if err != nil {
 		return nil, err
+	}
+	// ns aleady exists, so replace with newer settings
+	if ns != nil {
+		ns.StoragePriceDefault = hns.StoragePriceDefault
+		if !ns.CustomizedPricing {
+			ns.StoragePriceAsk = hns.StoragePriceAsk
+		}
+	} else {
+		ns = hns
 	}
 	err = PutHostStorageConfig(node, ns)
 	if err != nil {
@@ -169,7 +186,8 @@ func SaveHostsIntoDatastore(ctx context.Context, node *core.IpfsNode, mode strin
 // disk space max, if not, corrects this value.
 // Optionally, this function can take a new max and sets the max to this value.
 // Optionally, maxAllowed enables reducing unreasonable settings down to an allowed value.
-func CheckAndValidateHostStorageMax(cfgRoot string, r repo.Repo, newMax *uint64, maxAllowed bool) (uint64, error) {
+func CheckAndValidateHostStorageMax(ctx context.Context, cfgRoot string, r repo.Repo,
+	newMax *uint64, maxAllowed bool) (uint64, error) {
 	cfg, err := r.Config()
 	if err != nil {
 		return 0, err
@@ -180,7 +198,7 @@ func CheckAndValidateHostStorageMax(cfgRoot string, r repo.Repo, newMax *uint64,
 	if err != nil {
 		return 0, err
 	}
-	du, err := disk.Usage(cfgRoot)
+	du, err := disk.UsageWithContext(ctx, cfgRoot)
 	if err != nil {
 		return 0, err
 	}

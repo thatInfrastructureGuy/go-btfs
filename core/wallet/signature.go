@@ -4,16 +4,16 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rand"
-	"encoding/asn1"
+	"crypto/sha256"
 	"errors"
 	"math/big"
 	"time"
 
+	gbc_crypto "github.com/tron-us/go-btfs-common/crypto"
 	exPb "github.com/tron-us/go-btfs-common/protos/exchange"
 	ledgerPb "github.com/tron-us/go-btfs-common/protos/ledger"
 	corePb "github.com/tron-us/go-btfs-common/protos/protocol/core"
 
-	eth "github.com/ethereum/go-ethereum/crypto"
 	"github.com/golang/protobuf/proto"
 )
 
@@ -95,12 +95,7 @@ func Sign(in interface{}, key *ecdsa.PrivateKey) ([]byte, error) {
 
 //Tron' Sign function, return signature and error.
 func SignTron(rawData []byte, key *ecdsa.PrivateKey) ([]byte, error) {
-	hash, err := Hash(rawData)
-	if err != nil {
-		return nil, err
-	}
-
-	signature, err := eth.Sign(hash, key)
+	signature, err := gbc_crypto.EcdsaSign(key, rawData)
 	if err != nil {
 		return nil, err
 	}
@@ -109,28 +104,10 @@ func SignTron(rawData []byte, key *ecdsa.PrivateKey) ([]byte, error) {
 
 //Channel' sign function, return signature and error.
 func SignChannel(raw []byte, key *ecdsa.PrivateKey) ([]byte, error) {
-	hash, err := Hash(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	signature, err := key.Sign(rand.Reader, hash, crypto.SHA256)
+	hash := sha256.Sum256(raw)
+	signature, err := key.Sign(rand.Reader, hash[:], crypto.SHA256)
 	if err != nil {
 		return nil, err
 	}
 	return signature, nil
-}
-
-// Verify signature.
-func Verify(publicKey, data, signature []byte) (bool, error) {
-	pubKey, err := eth.UnmarshalPubkey(publicKey)
-	if err != nil {
-		return false, err
-	}
-	a := EcdsaSignature{}
-	_, err = asn1.Unmarshal(signature, &a)
-	if err != nil {
-		return false, nil
-	}
-	return ecdsa.Verify(pubKey, data, a.R, a.S), nil
 }
