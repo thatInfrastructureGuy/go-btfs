@@ -14,6 +14,7 @@ import (
 
 	ic "github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/peer"
+	"golang.org/x/sync/errgroup"
 )
 
 func renterSignEscrowContract(rss *sessions.RenterSession, shardHash string, shardIndex int, host string, totalPay int64, contingentAmount int64,
@@ -39,23 +40,25 @@ func renterSignEscrowContract(rss *sessions.RenterSession, shardHash string, sha
 		return nil, err
 	}
 	uh.EscrowContractMaps.Set(shardId, bytes)
+	eg, _ := errgroup.WithContext(rss.CtxParams.Ctx)
+	var renterSignBytes []byte
+	eg.Go(func() error {
+		renterSignBytes = <-bc
+		return nil
+	})
 	if !offlineSigning {
-		errChan := make(chan error)
-		go func() {
+		eg.Go(func() error {
 			sign, err := crypto.Sign(rss.CtxParams.N.PrivateKey, escrowContract)
 			if err != nil {
-				errChan <- err
-				return
+				return err
 			}
-			errChan <- nil
 			bc <- sign
-		}()
-		err = <-errChan
-		if err != nil {
-			return nil, err
-		}
+			return nil
+		})
 	}
-	renterSignBytes := <-bc
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
 	uh.EscrowChanMaps.Remove(shardId)
 	uh.EscrowContractMaps.Remove(shardId)
 	renterSignedEscrowContract, err := signContractAndMarshalOffSign(escrowContract, renterSignBytes, nil)
