@@ -38,8 +38,8 @@ type RecvContractParams struct {
 }
 
 var (
-	isReplacedHost    bool
-	isRegularContract bool
+	isReplacedHost   bool
+	isUploadContract bool
 )
 
 var StorageUploadInitCmd = &cmds.Command{
@@ -54,7 +54,7 @@ the shard and replies back to client for the next challenge step.`,
 		cmds.StringArg("session-id", true, false, "ID for the entire storage upload session."),
 		cmds.StringArg("file-hash", true, false, "Root file storage node should fetch (the DAG)."),
 		cmds.StringArg("shard-hash", true, false, "Shard the storage node should fetch."),
-		cmds.StringArg("price", true, false, "Per GiB per day in BTT for storing this shard offered by client."),
+		cmds.StringArg("price", true, false, "Per GiB per day in µBTT (=0.000001BTT) for storing this shard offered by client."),
 		cmds.StringArg("escrow-contract", true, false, "Client's initial escrow contract data."),
 		cmds.StringArg("guard-contract-meta", true, false, "Client's initial guard contract meta."),
 		cmds.StringArg("storage-length", true, false, "Store file for certain length in days."),
@@ -71,36 +71,30 @@ the shard and replies back to client for the next challenge step.`,
 		if !ctxParams.Cfg.Experimental.StorageHostEnabled {
 			return fmt.Errorf("storage host api not enabled")
 		}
-		settings, err := helper.GetHostStorageConfig(ctxParams.Ctx, ctxParams.N)
+
+		// reject contract if holding contracts is above threshold
+		hm := NewHostManager(ctxParams.Cfg)
+		shardSize, err := strconv.ParseInt(req.Arguments[7], 10, 64)
 		if err != nil {
 			return err
 		}
-		price, err := strconv.ParseInt(req.Arguments[3], 10, 64)
+		accept, err := hm.AcceptContract(ctxParams.N.Repo.Datastore(), ctxParams.N.Identity.String(), shardSize)
 		if err != nil {
+			fmt.Println("hm.AcceptContract error", err)
 			return err
 		}
-		if uint64(price) < settings.StoragePriceAsk {
-			return fmt.Errorf("price invalid: want: >=%d, got: %d", settings.StoragePriceAsk, price)
+		if !accept {
+			return errors.New("too many initialized contracts")
 		}
-		requestPid, ok := remote.GetStreamRequestRemotePeerID(req, ctxParams.N)
-		if !ok {
-			return fmt.Errorf("fail to get peer ID from request")
-		}
-		storeLen, err := strconv.Atoi(req.Arguments[6])
-		if err != nil {
-			return err
-		}
-		if uint64(storeLen) < settings.StorageTimeMin {
-			return fmt.Errorf("storage length invalid: want: >=%d, got: %d", settings.StorageTimeMin, storeLen)
-		}
-		ssId := req.Arguments[0]
-		shardHash := req.Arguments[2]
-		shardIndex, err := strconv.Atoi(req.Arguments[8])
-		if err != nil {
-			return err
-		}
-		var halfSignedGuardContBytes []byte
+
+		// renew情况
+		// host允许 host StoragePriceAsk > previous contract price and 唯一reject 情况是，min storage time > len
+		// 应该比较如果是old contract price大于settings.StoragePriceAsk取old contract price，如果是settings.StoragePriceAsk大于old contract price取settings.StoragePriceAsk
+		// 模拟host reject renew storage 情况， renew时候escrow的contract不能是old contract storage price，
+
 		halfSignedGuardContString := req.Arguments[5]
+
+		var halfSignedGuardContBytes []byte
 		halfSignedGuardContBytes = []byte(halfSignedGuardContString)
 		halfSignedGuardContract := &guardpb.Contract{}
 		err = proto.Unmarshal(halfSignedGuardContBytes, halfSignedGuardContract)
@@ -109,50 +103,139 @@ the shard and replies back to client for the next challenge step.`,
 		}
 		guardContractMeta := halfSignedGuardContract.ContractMeta
 
+		// get renter's public key
+		pid, ok := remote.GetStreamRequestRemotePeerID(req, ctxParams.N)
+		fmt.Println("pid", pid)
+		if !ok {
+			fmt.Println("remote.GetStreamRequestRemotePeerID(pid) is not ok")
+			return fmt.Errorf("fail to get peer ID from request")
+		}
 		var peerId string
-		if len(req.Arguments) >= 10 {
+		if peerId = pid.String(); len(req.Arguments) >= 10 {
 			peerId = req.Arguments[9]
 		}
 
-		var sourceId string
 		if guardContractMeta.HostPid != "" {
-			isRegularContract = true
-			sourceId = halfSignedGuardContract.PreparerPid
+			isUploadContract = true
+			//sourceId = halfSignedGuardContract.PreparerPid
 		} else if peerId != ctxParams.N.Identity.Pretty() {
 			isReplacedHost = true
-			sourceId = peerId
+			//sourceId = peerId
 		}
-		s := halfSignedGuardContract.GetRenterSignature()
-		if s == nil {
-			s = halfSignedGuardContract.GetPreparerSignature()
+
+		price, err := strconv.ParseInt(req.Arguments[3], 10, 64)
+		if err != nil {
+			return err
 		}
-		if isRegularContract {
-			if peerId == "" {
+		settings, err := helper.GetHostStorageConfig(ctxParams.Ctx, ctxParams.N)
+		if err != nil {
+			return err
+		}
+
+		hostAskPrice := int64(settings.StoragePriceAsk)
+		if isUploadContract && price < hostAskPrice {
+			return fmt.Errorf("price invalid: want: >=%d, got: %d", settings.StoragePriceAsk, price)
+		}
+
+		/*if uint64(price) < settings.StoragePriceAsk {
+			return fmt.Errorf("price invalid: want: >=%d, got: %d", settings.StoragePriceAsk, price)
+		}*/
+
+		requestPid, ok := remote.GetStreamRequestRemotePeerID(req, ctxParams.N)
+		fmt.Println("requestPid", requestPid)
+		if !ok {
+			fmt.Println("remote.GetStreamRequestRemotePeerID(requestPid) is not ok")
+			return fmt.Errorf("fail to get peer ID from request")
+		}
+		storeLen, err := strconv.Atoi(req.Arguments[6])
+		if err != nil {
+			return err
+		}
+
+		if uint64(storeLen) < settings.StorageTimeMin {
+			return fmt.Errorf("storage length invalid: want: >=%d, got: %d", settings.StorageTimeMin, storeLen)
+		}
+
+		ssId := req.Arguments[0]
+		shardHash := req.Arguments[2]
+		shardIndex, err := strconv.Atoi(req.Arguments[8])
+		if err != nil {
+			return err
+		}
+
+		//halfSignedEscrowContString := req.Arguments[4]
+		/*halfSignedGuardContString := req.Arguments[5]
+
+		var halfSignedGuardContBytes []byte
+		halfSignedGuardContBytes = []byte(halfSignedGuardContString)
+		halfSignedGuardContract := &guardpb.Contract{}
+		err = proto.Unmarshal(halfSignedGuardContBytes, halfSignedGuardContract)
+		if err != nil {
+			return err
+		}
+		guardContractMeta := halfSignedGuardContract.ContractMeta*/
+		// get renter's public key
+/*		pid, ok := remote.GetStreamRequestRemotePeerID(req, ctxParams.N)
+		if !ok {
+			return fmt.Errorf("fail to get peer ID from request")
+		}
+		var peerId string
+		if peerId = pid.String(); len(req.Arguments) >= 10 {
+			peerId = req.Arguments[9]
+		}*/
+		/*var peerId string
+		if len(req.Arguments) >= 10 {
+			peerId = req.Arguments[9]
+		}*/
+		//var sourceId string
+		/*if guardContractMeta.HostPid != "" {
+			isUploadContract = true
+			//sourceId = halfSignedGuardContract.PreparerPid
+		} else if peerId != ctxParams.N.Identity.Pretty() {
+			isReplacedHost = true
+			//sourceId = peerId
+		}*/
+		/*if !isUploadContract {
+			fmt.Println("is renew contract", true)
+			fmt.Println("is replace host", isReplacedHost)*/
+
+			/*if peerId == "" {
 				pid, ok := remote.GetStreamRequestRemotePeerID(req, ctxParams.N)
 				if !ok {
 					return fmt.Errorf("fail to get peer ID from request")
 				}
 				peerId = pid.String()
 			}
-		} else {
-			peerId = guardContractMeta.RenterPid
-		}
+		} else {*/
+		/*	peerId = guardContractMeta.RenterPid
+		}*/
 		payerPubKey, err := crypto.GetPubKeyFromPeerId(peerId)
 		if err != nil {
 			return err
 		}
+		s := halfSignedGuardContract.GetRenterSignature()
+		if s == nil {
+			s = halfSignedGuardContract.GetPreparerSignature()
+		}
 		ok, err = crypto.Verify(payerPubKey, &guardContractMeta, s)
 		if !ok || err != nil {
+			fmt.Println("verify guardContractMeta err", peerId, err)
 			return fmt.Errorf("can't verify guard contract: %v", err)
 		}
-
 		storageLength := int(guardContractMeta.RentEnd.Sub(guardContractMeta.RentStart).Hours() / 24)
-		if !isRegularContract {
-			halfSignedGuardContract.HostPid = ctxParams.N.Identity.Pretty()
+		if !isUploadContract {
+			peerId = guardContractMeta.RenterPid
 			halfSignedGuardContract.State = guardpb.Contract_RECREATED
+			//halfSignedGuardContract.ContractMeta.HostPid = ctxParams.N.Identity.Pretty()
+			guardContractMeta.HostPid = ctxParams.N.Identity.Pretty()
 			if storeLen != storageLength {
-				halfSignedGuardContract.RentEnd = halfSignedGuardContract.RentStart.Add(time.Duration(storeLen*24) * time.Hour)
+				//halfSignedGuardContract.ContractMeta.RentEnd = halfSignedGuardContract.ContractMeta.RentStart.Add(time.Duration(storeLen*24) * time.Hour)
+				guardContractMeta.RentEnd = guardContractMeta.RentStart.Add(time.Duration(storeLen*24) * time.Hour)
 			}
+			if price < hostAskPrice {
+				guardContractMeta.Price = hostAskPrice
+			}
+			fmt.Println("halfSignedGuardContract", halfSignedGuardContract)
 		}
 
 		halfSignedEscrowContString := req.Arguments[4]
@@ -191,6 +274,10 @@ the shard and replies back to client for the next challenge step.`,
 			return err
 		}
 
+		//channel wait here
+		errChan := make(chan error, 1)
+		//var wg sync.WaitGroup
+		//wg.Add(1)
 		go func() {
 			//Guard will send request to host before one day, so remove timer.
 			recvContract := &RecvContractParams{
@@ -200,23 +287,34 @@ the shard and replies back to client for the next challenge step.`,
 				signedEscrowContractBytes: signedEscrowContractBytes,
 				signedGuardContractBytes:  signedGuardContractBytes,
 			}
-			err = downloadShardAndChallenge(requestPid, ctxParams, recvContract, sourceId, halfSignedGuardContract, signedGuardContract)
-			if err != nil {
-				log.Error(err)
-			}
+			err = downloadShardAndChallenge(requestPid, ctxParams, recvContract, halfSignedGuardContract, signedGuardContract)
+			//if err != nil {
+			//	log.Debug(err)
+			//}
+			//wg.Done()
+			errChan <- err
 		}()
+		//wg.Wait()
+		err = <-errChan
+		if err != nil {
+			fmt.Println("download shard and challenge error", err)
+			log.Debug(err)
+			return err
+		}
+
+		fmt.Println("signed guard contract return to inquiry")
 		return cmds.EmitOnce(res, signedGuardContract)
 	},
 	Type: guardpb.Contract{},
 }
 
-func downloadShardAndChallenge(requestPid peer.ID, ctxParams *uh.ContextParams, param *RecvContractParams, sourceId string, halfSignedGuardContract *guardpb.Contract, signedGuardContract *guardpb.Contract) error {
+func downloadShardAndChallenge(requestPid peer.ID, ctxParams *uh.ContextParams, param *RecvContractParams, halfSignedGuardContract *guardpb.Contract, signedGuardContract *guardpb.Contract) error {
 	guardContractMeta := halfSignedGuardContract.ContractMeta
-	shard, err := sessions.GetHostShard(ctxParams, signedGuardContract.ContractId)
+	shard, err := sessions.GetProperHostShard(ctxParams, signedGuardContract.ContractId, isUploadContract)
 	if err != nil {
 		return err
 	}
-	_, err = remote.P2PCall(ctxParams.Ctx, ctxParams.N, requestPid, "/storage/upload/recvcontract",
+	_, err = remote.P2PCall(ctxParams.Ctx, ctxParams.N, ctxParams.Api, requestPid, "/storage/upload/recvcontract",
 		param.ssId,
 		param.shardHash,
 		param.shardIndex,
@@ -243,16 +341,48 @@ func downloadShardAndChallenge(requestPid peer.ID, ctxParams *uh.ContextParams, 
 	if err != nil {
 		return err
 	}
-	err = shard.Contract(param.signedEscrowContractBytes, tmp)
+
+	// decide renew status
+
+/*	err = shard.Contract(param.signedEscrowContractBytes, tmp)
 	if err != nil {
 		return err
-	}
-	if isRegularContract || isReplacedHost {
-		err = downloadShardFromClient(ctxParams, halfSignedGuardContract, guardContractMeta.FileHash, param.shardHash, sourceId)
+	}*/
+	fileHash := guardContractMeta.FileHash
+	if isUploadContract || isReplacedHost {
+		err = shard.Contract(param.signedEscrowContractBytes, tmp)
 		if err != nil {
 			return err
 		}
+		err = downloadShardFromClient(ctxParams, halfSignedGuardContract, fileHash, param.shardHash)
+		if err != nil {
+			return err
+		}
+		err = challengeShard(ctxParams, fileHash, false, &guardContractMeta)
+		if err != nil {
+			return err
+		}
+		if err = shard.Complete(); err != nil {
+			return err
+		}
+	} else {
+		err = shard.Renew(param.signedEscrowContractBytes, tmp)
+		if err != nil {
+			return err
+		}
+		if err = shard.RenewComplete(); err != nil {
+			return err
+		}
 	}
+
+	// decide renew status
+	//if err = shard.Complete(); err != nil {
+	//	return err
+	//}
+	return nil
+}
+
+func challengeShard(ctxParams *uh.ContextParams, fileHash string, isRepair bool, guardContractMeta *guardpb.ContractMeta) error {
 	in := &guardpb.ReadyForChallengeRequest{
 		RenterPid:   guardContractMeta.RenterPid,
 		FileHash:    guardContractMeta.FileHash,
@@ -260,28 +390,94 @@ func downloadShardAndChallenge(requestPid peer.ID, ctxParams *uh.ContextParams, 
 		ContractId:  guardContractMeta.ContractId,
 		HostPid:     guardContractMeta.HostPid,
 		PrepareTime: guardContractMeta.RentStart,
+		IsRepair:    isRepair,
 	}
+
 	sign, err := crypto.Sign(ctxParams.N.PrivateKey, in)
 	if err != nil {
 		return err
 	}
 	in.Signature = sign
-	// Need to renew another 5 mins due to downloading shard could have already made
+	// Need to renew another 6 mins due to downloading shard could have already made
 	// req.Context obsolete
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	var question *guardpb.RequestChallengeQuestion
 	err = grpc.GuardClient(ctxParams.Cfg.Services.GuardDomain).WithContext(ctx,
 		func(ctx context.Context, client guardpb.GuardServiceClient) error {
-			_, err = client.ReadyForChallenge(ctx, in)
+			for i := 0; i < 3; i++ {
+				question, err = client.RequestChallenge(ctx, in)
+				if err == nil {
+					break
+				}
+				time.Sleep(30 * time.Second)
+			}
+			return err
+		})
+	if err != nil {
+		fmt.Println("request challenge questions error", err)
+		log.Errorf("request challenge questions error: [%v]", err)
+		return err
+	}
+	if question == nil {
+		return errors.New("question is nil")
+	}
+
+	fileHashCid, err := cidlib.Parse(fileHash)
+	if err != nil {
+		return err
+	}
+	shardHashCid, err := cidlib.Parse(question.Question.ShardHash)
+	if err != nil {
+		return err
+	}
+	sc, err := challenge.NewStorageChallengeResponse(ctx, ctxParams.N, ctxParams.Api,
+		fileHashCid, shardHashCid, "", false, 0)
+	if err != nil {
+		return err
+	}
+	err = sc.SolveChallenge(int(question.Question.ChunkIndex), question.Question.Nonce)
+	if err != nil {
+		return err
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	resp := &guardpb.ResponseChallengeQuestion{
+		Answer: &guardpb.ChallengeQuestion{
+			ShardHash:    question.Question.ShardHash,
+			HostPid:      question.Question.HostPid,
+			ChunkIndex:   int32(sc.CIndex),
+			Nonce:        sc.Nonce,
+			ExpectAnswer: sc.Hash,
+		},
+		FileHash:    fileHash,
+		HostPid:     question.Question.HostPid,
+		ResolveTime: time.Now(),
+		IsRepair:    isRepair,
+	}
+
+	privKey, err := ctxParams.Cfg.Identity.DecodePrivateKey("")
+	if err != nil {
+		return err
+	}
+	sig, err := crypto.Sign(privKey, resp)
+	if err != nil {
+		return err
+	}
+	resp.Signature = sig
+	err = grpc.GuardClient(ctxParams.Cfg.Services.GuardDomain).WithContext(ctx,
+		func(ctx context.Context, client guardpb.GuardServiceClient) error {
+			_, err := client.ResponseChallenge(ctx, resp)
 			if err != nil {
 				return err
 			}
 			return nil
 		})
 	if err != nil {
-		return err
-	}
-	if err = shard.Complete(); err != nil {
+		fmt.Println("client.ResponseChallenge err", err)
+		log.Debug(err)
+		log.Errorf("response challenge error: [%v]", err)
+		//return fmt.Errorf("response challenge error: [%v]", err)
 		return err
 	}
 	return nil
@@ -361,7 +557,7 @@ func checkPaymentFromClient(ctxParams *uh.ContextParams, paidIn chan bool, contr
 }
 
 func downloadShardFromClient(ctxParams *uh.ContextParams, guardContract *guardpb.Contract, fileHash string,
-	shardHash string, sourceId string) error {
+	shardHash string) error {
 
 	// Get + pin to make sure it does not get accidentally deleted
 	// Sharded scheme as special pin logic to add
@@ -393,30 +589,14 @@ func downloadShardFromClient(ctxParams *uh.ContextParams, guardContract *guardpb
 		scaledRetry = highRetry
 	}
 	expir := uint64(guardContract.RentEnd.Unix())
-	sourcePid, err := peer.IDB58Decode(sourceId)
+	/*sourcePid, err := peer.IDB58Decode(sourceId)
 	if err != nil {
 		return nil
-	}
+	}*/
 	// based on small and large file sizes
 	err = backoff.Retry(func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), scaled)
 		defer cancel()
-
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					break
-				}
-				swarmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
-				err := ctxParams.Api.Swarm().Connect(swarmCtx, peer.AddrInfo{ID: sourcePid})
-				if err == nil {
-					return
-				}
-			}
-		}()
-
 		_, err = challenge.NewStorageChallengeResponse(ctx, ctxParams.N, ctxParams.Api, fileCid, shardCid, "", true, expir)
 		return err
 	}, uh.DownloadShardBo(scaledRetry))

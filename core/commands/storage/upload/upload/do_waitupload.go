@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
+	"github.com/TRON-US/go-btfs/core/commands/storage/contracts"
 	"github.com/TRON-US/go-btfs/core/commands/storage/upload/helper"
 	"github.com/TRON-US/go-btfs/core/commands/storage/upload/sessions"
 	renterpb "github.com/TRON-US/go-btfs/protos/renter"
 
 	"github.com/tron-us/go-btfs-common/crypto"
 	guardpb "github.com/tron-us/go-btfs-common/protos/guard"
+	nodepb "github.com/tron-us/go-btfs-common/protos/node"
 	"github.com/tron-us/go-btfs-common/utils/grpc"
 
 	"github.com/alecthomas/units"
@@ -29,17 +32,17 @@ func getSuccessThreshold(totalShards int) int {
 }
 
 func ResumeWaitUploadOnSigning(rss *sessions.RenterSession) error {
-	return waitUpload(rss, false, &guardpb.FileStoreStatus{
+	return waitComplete(rss, false, &guardpb.FileStoreStatus{
 		FileStoreMeta: guardpb.FileStoreMeta{
 			RenterPid: rss.CtxParams.N.Identity.String(),
 			FileSize:  math.MaxInt64,
 		},
-	}, true)
+	}, true, false)
 }
 
-func waitUpload(rss *sessions.RenterSession, offlineSigning bool, fsStatus *guardpb.FileStoreStatus, resume bool) error {
+func waitComplete(rss *sessions.RenterSession, offlineSigning bool, fsStatus *guardpb.FileStoreStatus, resume bool, isRenewContract bool) error {
 	threshold := getSuccessThreshold(len(rss.ShardHashes))
-	if !resume {
+	if !resume && !isRenewContract {
 		if err := rss.To(sessions.RssToWaitUploadEvent); err != nil {
 			return err
 		}
@@ -79,7 +82,7 @@ func waitUpload(rss *sessions.RenterSession, offlineSigning bool, fsStatus *guar
 	}
 	sign := <-cb
 	helper.WaitUploadChanMap.Remove(rss.SsId)
-	if !resume {
+	if !resume && !isRenewContract {
 		if err := rss.To(sessions.RssToWaitUploadReqSignedEvent); err != nil {
 			return err
 		}
@@ -105,7 +108,7 @@ func waitUpload(rss *sessions.RenterSession, offlineSigning bool, fsStatus *guar
 				for _, c := range meta.Contracts {
 					m[c.State.String()]++
 					switch c.State {
-					case guardpb.Contract_READY_CHALLENGE, guardpb.Contract_REQUEST_CHALLENGE, guardpb.Contract_UPLOADED:
+					case guardpb.Contract_READY_CHALLENGE, guardpb.Contract_REQUEST_CHALLENGE, guardpb.Contract_UPLOADED, guardpb.Contract_RECREATED:
 						num++
 					}
 					shard, err := sessions.GetRenterShard(rss.CtxParams, rss.SsId, c.ShardHash, int(c.ShardIndex))
@@ -121,19 +124,37 @@ func waitUpload(rss *sessions.RenterSession, offlineSigning bool, fsStatus *guar
 				if err == nil {
 					rss.UpdateAdditionalInfo(string(bytes))
 				}
-				log.Infof("%d shards uploaded.", num)
+				log.Infof("%d shards uploaded or renewed.", num)
 				if num >= threshold {
 					return nil
 				}
-				return errors.New("uploading")
+				return errors.New("upload or renew error")
 			})
 		return err
 	}, helper.WaitUploadBo(highRetry))
+
 	if err != nil {
 		return err
 	}
-	if err := rss.To(sessions.RssToCompleteEvent); err != nil {
-		return err
+
+	if isRenewContract {
+		fmt.Println("sessions.RssToRenewCompleteEvent")
+		if err := rss.To(sessions.RssToRenewCompleteEvent); err != nil {
+			return err
+		}
+	} else {
+		if err := rss.To(sessions.RssToCompleteEvent); err != nil {
+			return err
+		} else {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := contracts.SyncContracts(ctx, rss.CtxParams.N, rss.CtxParams.Req, rss.CtxParams.Env,
+					nodepb.ContractStat_RENTER.String()); err != nil {
+					log.Debug(err)
+				}
+			}()
+		}
 	}
 	return nil
 }

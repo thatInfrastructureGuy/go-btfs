@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"io/ioutil"
 	"strconv"
 	"strings"
@@ -15,21 +14,23 @@ import (
 	"github.com/TRON-US/go-btfs/core/commands/storage/helper"
 	"github.com/TRON-US/go-btfs/core/commands/storage/upload/sessions"
 	"github.com/TRON-US/go-btfs/core/corehttp/remote"
-
-	"github.com/tron-us/go-btfs-common/crypto"
-	guardpb "github.com/tron-us/go-btfs-common/protos/guard"
-	"github.com/tron-us/go-btfs-common/utils/grpc"
+	"github.com/TRON-US/go-btfs/core/corerepo"
 
 	shell "github.com/TRON-US/go-btfs-api"
 	cmds "github.com/TRON-US/go-btfs-cmds"
 	uh "github.com/TRON-US/go-btfs/core/commands/storage/upload/helper"
+	"github.com/tron-us/go-btfs-common/crypto"
+	guardpb "github.com/tron-us/go-btfs-common/protos/guard"
+	"github.com/tron-us/go-btfs-common/utils/grpc"
 
 	"github.com/alecthomas/units"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/tron-us/protobuf/proto"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 type RepairContractParams struct {
@@ -41,7 +42,10 @@ type RepairContractParams struct {
 	DownloadRewardAmount int64
 }
 
-const requestInterval = 5 //minutes
+const (
+	requestInterval = 5 * time.Minute
+	repairerTimeout = 60 * time.Minute
+)
 
 var requestFileHash string
 var StorageDcRepairRouterCmd = &cmds.Command{
@@ -72,18 +76,22 @@ This command sends request to mining host to negotiate the repair works.`,
 		lostShardHashes := strings.Split(req.Arguments[2], ",")
 		fileSize, err := strconv.ParseInt(req.Arguments[3], 10, 64)
 		if err != nil {
+			log.Errorf("file size parse error: [%v]", err)
 			return err
 		}
 		downloadRewardAmount, err := strconv.ParseInt(req.Arguments[4], 10, 64)
 		if err != nil {
+			log.Errorf("download reward amount parse error: [%v]", err)
 			return err
 		}
 		repairRewardAmount, err := strconv.ParseInt(req.Arguments[5], 10, 64)
 		if err != nil {
+			log.Errorf("repair reward amount parse error: [%v]", err)
 			return err
 		}
 		err = emptyCheck(fileHash, lostShardHashes, fileSize, downloadRewardAmount, repairRewardAmount)
 		if err != nil {
+			log.Errorf("required field is empty: [%v]", err)
 			return err
 		}
 		n, err := cmdenv.GetNode(env)
@@ -155,21 +163,22 @@ returns the repairer's signed contract to the invoker.`,
 		lostShardHashes := strings.Split(req.Arguments[1], ",")
 		fileSize, err := strconv.ParseInt(req.Arguments[2], 10, 64)
 		if err != nil {
+			log.Errorf("file size parse error: [%v]", err)
 			return err
 		}
 		downloadRewardAmount, err := strconv.ParseInt(req.Arguments[3], 10, 64)
 		if err != nil {
+			log.Errorf("download reward amount parse error: [%v]", err)
 			return err
 		}
 		repairRewardAmount, err := strconv.ParseInt(req.Arguments[4], 10, 64)
 		if err != nil {
+			log.Errorf("repair reward amount parse error: [%v]", err)
 			return err
 		}
 		err = emptyCheck(fileHash, lostShardHashes, fileSize, downloadRewardAmount, repairRewardAmount)
 		if err != nil {
-			return err
-		}
-		if err != nil {
+			log.Errorf("required field is empty: [%v]", err)
 			return err
 		}
 		if !ctxParams.Cfg.Experimental.StorageHostEnabled {
@@ -178,8 +187,19 @@ returns the repairer's signed contract to the invoker.`,
 		if !ctxParams.Cfg.Experimental.HostRepairEnabled {
 			return fmt.Errorf("storage repair api not enabled")
 		}
+		sizeStat, err := corerepo.RepoSize(req.Context, ctxParams.N)
+		if err != nil {
+			return err
+		}
+		remainStorage := sizeStat.StorageMax - sizeStat.RepoSize
+		if fileSize > int64(remainStorage) {
+			errMsg := fmt.Sprintf("remaining storage space [%d] is less than required storage size [%d]", remainStorage, fileSize)
+			log.Errorf(errMsg)
+			return fmt.Errorf(errMsg)
+		}
 		ns, err := helper.GetHostStorageConfig(ctxParams.Ctx, ctxParams.N)
 		if err != nil {
+			log.Errorf("get host storage config error: [%v]", err)
 			return err
 		}
 		var price uint64
@@ -193,9 +213,11 @@ returns the repairer's signed contract to the invoker.`,
 			totalPrice = 1
 		}
 		if totalPrice > uint64(repairRewardAmount) {
-			return fmt.Errorf("host desired price %d is greater than request price %d", totalPrice, repairRewardAmount)
+			errMsg := fmt.Sprintf("host desired price [%d] is greater than request price [%d]", totalPrice, repairRewardAmount)
+			log.Errorf(errMsg)
+			return fmt.Errorf(errMsg)
 		}
-		doRepair(ctxParams, &RepairContractParams{
+		err = doRepair(ctxParams, &RepairContractParams{
 			FileHash:             fileHash,
 			FileSize:             fileSize,
 			RepairPid:            repairId,
@@ -203,58 +225,69 @@ returns the repairer's signed contract to the invoker.`,
 			RepairRewardAmount:   repairRewardAmount,
 			DownloadRewardAmount: downloadRewardAmount,
 		})
-		log.Info("repair lost shards done", zap.String("peer id", ctxParams.N.Identity.Pretty()))
+
+		if err != nil {
+			log.Errorf("repair job failed for peer id [%s]: [%v]", repairId, err)
+			return err
+		}
+
+		log.Info("repair lost shards done", zap.String("peerId", ctxParams.N.Identity.Pretty()))
 		return nil
 	},
 }
 
-func doRepair(ctxParams *uh.ContextParams, params *RepairContractParams) {
-	go func() {
-		err := func() error {
-			repairContractResp, err := submitSignedRepairContract(ctxParams, params)
+func doRepair(ctxParams *uh.ContextParams, params *RepairContractParams) error {
+	ctx, cf := context.WithTimeout(ctxParams.Ctx, repairerTimeout)
+	defer cf()
+	eg, ctx := errgroup.WithContext(ctx)
+	eg.Go(func() error {
+		repairContractResp, err := submitSignedRepairContract(ctxParams, params)
+		if err != nil {
+			log.Error("submit repair contract error", zap.Error(err), zap.String("peerId", ctxParams.N.Identity.Pretty()))
+			return err
+		}
+		if repairContractResp.Status == guardpb.RepairContractResponse_BOTH_SIGNED {
+			repairContract := repairContractResp.Contract
+			signedContractID, err := signContractID(repairContract.RepairContractId, ctxParams.N.PrivateKey)
 			if err != nil {
 				return err
 			}
-			if repairContractResp.Status == guardpb.RepairContractResponse_BOTH_SIGNED {
-				repairContract := repairContractResp.Contract
-				signedContractID, err := signContractID(repairContract.RepairContractId, ctxParams.N.PrivateKey)
-				if err != nil {
-					return err
-				}
-				paidIn := make(chan bool)
-				go checkPaymentFromClient(ctxParams, paidIn, signedContractID)
-				paid := <-paidIn
-				if !paid {
-					log.Debug("contract is not paid", zap.String("contract id", repairContract.RepairContractId))
-				}
-				_, err = downloadAndRebuildFile(ctxParams, repairContract.FileHash, repairContract.LostShardHash)
-				if err != nil {
-					return err
-				}
-				err = challengeLostShards(ctxParams, repairContract)
-				if err != nil {
-					return err
-				}
-				fileStatus, err := uploadShards(ctxParams, repairContract)
-				if err != nil {
-					return err
-				}
-				if fileStatus == nil {
-					return nil
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				defer cancel()
-				err = submitFileStatus(ctx, ctxParams.Cfg, fileStatus)
-				if err != nil {
-					return err
-				}
+			paidIn := make(chan bool)
+			go checkPaymentFromClient(ctxParams, paidIn, signedContractID)
+			paid := <-paidIn
+			if !paid {
+				log.Error("contract is not paid", zap.String("contractId", repairContract.RepairContractId))
 			}
-			return nil
-		}()
-		if err != nil {
-			log.Errorf("repair error: [%s]", err.Error())
+			_, err = downloadAndRebuildFile(ctxParams, repairContract.FileHash, repairContract.LostShardHash)
+			if err != nil {
+				log.Errorf("download and rebuild file error: [%v]", err)
+				return err
+			}
+			err = challengeLostShards(ctxParams, repairContract)
+			if err != nil {
+				log.Errorf("challenge lost shards error: [%v]", err)
+				return err
+			}
+			fileStatus, err := uploadShards(ctxParams, repairContract)
+			if err != nil {
+				log.Errorf("repairer uploads shards error: [%v]", err)
+				return err
+			}
+			if fileStatus == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			err = submitFileStatus(ctx, ctxParams.Cfg, fileStatus)
+			if err != nil {
+				log.Errorf("submit file store status error: [%v]", err)
+				return err
+			}
+			unpinLocalStorage(ctxParams, repairContract.FileHash)
 		}
-	}()
+		return nil
+	})
+	return eg.Wait()
 }
 
 func submitSignedRepairContract(ctxParams *uh.ContextParams, params *RepairContractParams) (*guardpb.RepairContractResponse, error) {
@@ -300,8 +333,7 @@ func uploadShards(ctxParams *uh.ContextParams, repairContract *guardpb.RepairCon
 	repairContractReq.RepairSignature = repairSignature
 	var statusMeta *guardpb.FileStoreStatus
 	var repairContractResp *guardpb.ResponseRepairContracts
-	duration := time.Duration(requestInterval)
-	tick := time.Tick(duration * time.Minute)
+	tick := time.Tick(requestInterval)
 	ctxParams.Ctx = context.Background()
 
 FOR:
@@ -329,12 +361,12 @@ FOR:
 			}
 			if repairContractResp.State == guardpb.ResponseRepairContracts_DOWNLOAD_NOT_DONE {
 				unpinLocalStorage(ctxParams, repairContract.FileHash)
-				log.Info("download and challenge can not be completed for lost shards", zap.String("repairer id", repairContract.RepairPid))
+				log.Info("download and challenge can not be completed for lost shards", zap.String("repairerId", repairContract.RepairPid))
 				return nil, nil
 			}
 			if repairContractResp.State == guardpb.ResponseRepairContracts_CONTRACT_CLOSED {
 				unpinLocalStorage(ctxParams, repairContract.FileHash)
-				log.Info("repair contract has been closed", zap.String("contract id", repairContract.RepairContractId))
+				log.Info("repair contract has been closed", zap.String("contractId", repairContract.RepairContractId))
 				return nil, nil
 			}
 		}
@@ -370,10 +402,12 @@ FOR:
 
 	updatedContracts, err := retrieveUpdatedContracts(shardMap, rss)
 	if err != nil {
+		log.Errorf("retrieve updated contracts error: [%v]", err)
 		return nil, err
 	}
 	fileStatus, err := NewFileStatus(updatedContracts, rss.CtxParams.Cfg, updatedContracts[0].ContractMeta.RenterPid, rss.Hash, statusMeta.FileSize)
 	if err != nil {
+		log.Errorf("fail to create file store status error: [%v]", err)
 		return nil, err
 	}
 	sign, err := crypto.Sign(rss.CtxParams.N.PrivateKey, &fileStatus.FileStoreMeta)
@@ -385,7 +419,6 @@ FOR:
 }
 
 func downloadAndSignContracts(contract *guardpb.Contract, rss *sessions.RenterSession, ctx context.Context, hp uh.IHostsProvider) {
-	signContractErr := make([]string, 0)
 	go func() {
 		err := backoff.Retry(func() error {
 			select {
@@ -412,7 +445,7 @@ func downloadAndSignContracts(contract *guardpb.Contract, rss *sessions.RenterSe
 			contract.PreparerPid = repairPid.Pretty()
 			sign, err := crypto.Sign(rss.CtxParams.N.PrivateKey, &contract.ContractMeta)
 			if err != nil {
-				return fmt.Errorf("falled to sign updated contract {%s}", contract.ContractMeta.ContractId)
+				return err
 			}
 			contract.PreparerSignature = sign
 			contract.RenterSignature = nil
@@ -445,6 +478,7 @@ func downloadAndSignContracts(contract *guardpb.Contract, rss *sessions.RenterSe
 				)
 				if err != nil {
 					cb <- err
+					log.Errorf("init P2P call to host id [%s] with error: [%v]", host, err)
 				}
 			}()
 			tick := time.Tick(30 * time.Second)
@@ -457,14 +491,11 @@ func downloadAndSignContracts(contract *guardpb.Contract, rss *sessions.RenterSe
 			}
 		}, uh.HandleShardBo)
 		if err != nil {
-			signContractErr = append(signContractErr, contract.ShardHash)
+			log.Errorf("fail to setup contract for shard [%s]: [%v]", contract.ShardHash, err)
 			_ = rss.To(sessions.RssToErrorEvent,
-				errors.New("timeout: failed to setup contract in "+uh.HandleShardBo.MaxElapsedTime.String()))
+				errors.New("timeout: fail to setup contract in "+uh.HandleShardBo.MaxElapsedTime.String()))
 		}
 	}()
-	if len(signContractErr) > 0 {
-		log.Debugf("hosts failed to sign and download shard hashes: %s", strings.Join(signContractErr, ","))
-	}
 }
 
 func retrieveUpdatedContracts(shardMap map[int]string, rss *sessions.RenterSession) ([]*guardpb.Contract, error) {
@@ -477,6 +508,7 @@ func retrieveUpdatedContracts(shardMap map[int]string, rss *sessions.RenterSessi
 		case <-tick:
 			remainNum, queryContracts, err := queryUpdatedContracts(shardMap, rss)
 			if err != nil {
+				log.Errorf("query updated contracts error: [%v]", err)
 				return nil, err
 			}
 			updatedContracts = append(updatedContracts, queryContracts...)
@@ -536,7 +568,7 @@ func downloadAndRebuildFile(ctxParams *uh.ContextParams, fileHash string, repair
 
 func unpinLocalStorage(ctxParams *uh.ContextParams, fishHash string) error {
 	url := fmt.Sprint(strings.Split(ctxParams.Cfg.Addresses.API[0], "/")[2], ":", strings.Split(ctxParams.Cfg.Addresses.API[0], "/")[4])
-	err := shell.NewShell(url).Request("pin/rm", fishHash).Option("recursive", true).Exec(ctxParams.Ctx, nil)
+	err := shell.NewShell(url).Request("pin/rm", fishHash).Option("r", true).Exec(ctxParams.Ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -544,38 +576,22 @@ func unpinLocalStorage(ctxParams *uh.ContextParams, fishHash string) error {
 }
 
 func challengeLostShards(ctxParams *uh.ContextParams, repairReq *guardpb.RepairContract) error {
-	errChan := make(chan error, len(repairReq.LostShardHash))
+	eg, _ := errgroup.WithContext(ctxParams.Ctx)
 	for _, lostShardHash := range repairReq.LostShardHash {
-		go func(shardHash string) {
-			err := func() error {
-				fileHash := repairReq.FileHash
-				err := challengeShard(ctxParams, fileHash, true, &guardpb.ContractMeta{
-					//RenterPid:   repairReq.RepairPid,
-					FileHash:   fileHash,
-					ShardHash:  shardHash,
-					ContractId: repairReq.RepairContractId,
-					HostPid:    repairReq.RepairPid,
-					RentStart:  repairReq.RepairSignTime,
-				})
-				if err != nil {
-					return err
-				}
-				return nil
-			}()
-			errChan <- err
-		}(lostShardHash)
+		shardHash := lostShardHash
+		eg.Go(func() error {
+			fileHash := repairReq.FileHash
+			return challengeShard(ctxParams, fileHash, true, &guardpb.ContractMeta{
+				//RenterPid:   repairReq.RepairPid,
+				FileHash:   fileHash,
+				ShardHash:  shardHash,
+				ContractId: repairReq.RepairContractId,
+				HostPid:    repairReq.RepairPid,
+				RentStart:  repairReq.RepairSignTime,
+			})
+		})
 	}
-	count := 0
-	for err := range errChan {
-		count++
-		if err != nil {
-			return err
-		}
-		if count == len(repairReq.LostShardHash) {
-			break
-		}
-	}
-	return nil
+	return eg.Wait()
 }
 
 func emptyCheck(fileHash string, lostShardHashes []string, fileSize int64, DownloadRewardAmount int64, RepairRewardAmount int64) error {
