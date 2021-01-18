@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/TRON-US/go-btfs/assets"
+
 	ipfspath "github.com/ipfs/go-path"
 )
 
@@ -22,11 +23,9 @@ type listingTemplateData struct {
 }
 
 type directoryItem struct {
-	Size      string
-	Name      string
-	Path      string
-	Hash      string
-	ShortHash string
+	Size string
+	Name string
+	Path string
 }
 
 type breadcrumb struct {
