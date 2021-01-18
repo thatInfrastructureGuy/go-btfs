@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -136,7 +135,6 @@ func newTestServerAndNode(t *testing.T, ns mockNamesys) (*httptest.Server, iface
 	// listener, and server with handler. yay cycles.
 	dh := &delegatedHandler{}
 	ts := httptest.NewServer(dh)
-	t.Cleanup(func() { ts.Close() })
 
 	dh.Handler, err = makeHandler(n,
 		ts.Listener,
@@ -156,14 +154,10 @@ func newTestServerAndNode(t *testing.T, ns mockNamesys) (*httptest.Server, iface
 	return ts, api, n.Context()
 }
 
-func matchPathOrBreadcrumbs(s string, expected string) bool {
-	matched, _ := regexp.MatchString("Index of "+regexp.QuoteMeta(expected), s)
-	return matched
-}
-
 func TestGatewayGet(t *testing.T) {
 	ns := mockNamesys{}
 	ts, api, ctx := newTestServerAndNode(t, ns)
+	defer ts.Close()
 
 	k, err := api.Unixfs().Add(ctx, files.NewBytesFile([]byte("fnord")))
 	if err != nil {
@@ -241,73 +235,11 @@ func TestGatewayGet(t *testing.T) {
 	}
 }
 
-func TestPretty404(t *testing.T) {
-	ns := mockNamesys{}
-	ts, api, ctx := newTestServerAndNode(t, ns)
-
-	f1 := files.NewMapDirectory(map[string]files.Node{
-		"ipfs-404.html": files.NewBytesFile([]byte("Custom 404")),
-		"deeper": files.NewMapDirectory(map[string]files.Node{
-			"ipfs-404.html": files.NewBytesFile([]byte("Deep custom 404")),
-		}),
-	})
-
-	k, err := api.Unixfs().Add(ctx, f1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	host := "example.net"
-	ns["/btns/"+host] = path.FromString(k.String())
-
-	for _, test := range []struct {
-		path   string
-		accept string
-		status int
-		text   string
-	}{
-		{"/ipfs-404.html", "text/html", http.StatusOK, "Custom 404"},
-		{"/nope", "text/html", http.StatusNotFound, "Custom 404"},
-		{"/nope", "text/*", http.StatusNotFound, "Custom 404"},
-		{"/nope", "*/*", http.StatusNotFound, "Custom 404"},
-		{"/nope", "application/json", http.StatusNotFound, "btfs resolve -r /btns/example.net/nope: no link named \"nope\" under QmcmnF7XG5G34RdqYErYDwCKNFQ6jb8oKVR21WAJgubiaj\n"},
-		{"/deeper/nope", "text/html", http.StatusNotFound, "Deep custom 404"},
-		{"/deeper/", "text/html", http.StatusOK, ""},
-		{"/deeper", "text/html", http.StatusOK, ""},
-		{"/nope/nope", "text/html", http.StatusNotFound, "Custom 404"},
-	} {
-		var c http.Client
-		req, err := http.NewRequest("GET", ts.URL+test.path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Add("Accept", test.accept)
-		req.Host = host
-		resp, err := c.Do(req)
-
-		if err != nil {
-			t.Fatalf("error requesting %s: %s", test.path, err)
-		}
-
-		defer resp.Body.Close()
-		if resp.StatusCode != test.status {
-			t.Fatalf("got %d, expected %d, from %s", resp.StatusCode, test.status, test.path)
-		}
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("error reading response from %s: %s", test.path, err)
-		}
-
-		if test.text != "" && string(body) != test.text {
-			t.Fatalf("unexpected response body from %s: got %q, expected %q", test.path, body, test.text)
-		}
-	}
-}
-
 func TestIPNSHostnameRedirect(t *testing.T) {
 	ns := mockNamesys{}
 	ts, api, ctx := newTestServerAndNode(t, ns)
 	t.Logf("test server url: %s", ts.URL)
+	defer ts.Close()
 
 	// create /btns/example.net/foo/index.html
 
@@ -395,6 +327,7 @@ func TestIPNSHostnameBacklinks(t *testing.T) {
 	ns := mockNamesys{}
 	ts, api, ctx := newTestServerAndNode(t, ns)
 	t.Logf("test server url: %s", ts.URL)
+	defer ts.Close()
 
 	f1 := files.NewMapDirectory(map[string]files.Node{
 		"file.txt": files.NewBytesFile([]byte("1")),
@@ -445,9 +378,9 @@ func TestIPNSHostnameBacklinks(t *testing.T) {
 	s := string(body)
 	t.Logf("body: %s\n", string(body))
 
-	//if !matchPathOrBreadcrumbs(s, "/btns/example.net/foo? #&lt;&#39;/bar/") {
-	//	t.Fatalf("expected a path in directory listing")
-	//}
+	if !strings.Contains(s, "Index of /foo? #&lt;&#39;/") {
+		t.Fatalf("expected a path in directory listing")
+	}
 	if !strings.Contains(s, "<a href=\"/foo%3F%20%23%3C%27/./..\">") {
 		t.Fatalf("expected backlink in directory listing")
 	}
@@ -478,7 +411,7 @@ func TestIPNSHostnameBacklinks(t *testing.T) {
 	s = string(body)
 	t.Logf("body: %s\n", string(body))
 
-	if !matchPathOrBreadcrumbs(s, "/") {
+	if !strings.Contains(s, "Index of /") {
 		t.Fatalf("expected a path in directory listing")
 	}
 	if !strings.Contains(s, "<a href=\"/\">") {
@@ -511,9 +444,9 @@ func TestIPNSHostnameBacklinks(t *testing.T) {
 	s = string(body)
 	t.Logf("body: %s\n", string(body))
 
-	//if !matchPathOrBreadcrumbs(s, "/btns/<a href=\"/btns/example.net\">example.net</a>/<a href=\"/btns/example.net/foo%3F%20%23%3C%27\">foo? #&lt;&#39;</a>/<a href=\"/btns/example.net/foo%3F%20%23%3C%27/bar\">bar</a>") {
-	//	t.Fatalf("expected a path in directory listing")
-	//}
+	if !strings.Contains(s, "Index of /foo? #&lt;&#39;/bar/") {
+		t.Fatalf("expected a path in directory listing")
+	}
 	if !strings.Contains(s, "<a href=\"/foo%3F%20%23%3C%27/bar/./..\">") {
 		t.Fatalf("expected backlink in directory listing")
 	}
@@ -545,9 +478,9 @@ func TestIPNSHostnameBacklinks(t *testing.T) {
 	s = string(body)
 	t.Logf("body: %s\n", string(body))
 
-	//if !matchPathOrBreadcrumbs(s, "/btns/<a href=\"/btns/example.net\">example.net</a>") {
-	//	t.Fatalf("expected a path in directory listing")
-	//}
+	if !strings.Contains(s, "Index of /good-prefix") {
+		t.Fatalf("expected a path in directory listing")
+	}
 	if !strings.Contains(s, "<a href=\"/good-prefix/\">") {
 		t.Fatalf("expected backlink in directory listing")
 	}
@@ -587,7 +520,7 @@ func TestIPNSHostnameBacklinks(t *testing.T) {
 	s = string(body)
 	t.Logf("body: %s\n", string(body))
 
-	if !matchPathOrBreadcrumbs(s, "/") {
+	if !strings.Contains(s, "Index of /") {
 		t.Fatalf("expected a path in directory listing")
 	}
 	if !strings.Contains(s, "<a href=\"/\">") {
@@ -604,6 +537,7 @@ func TestIPNSHostnameBacklinks(t *testing.T) {
 func TestCacheControlImmutable(t *testing.T) {
 	ts, _, _ := newTestServerAndNode(t, nil)
 	t.Logf("test server url: %s", ts.URL)
+	defer ts.Close()
 
 	req, err := http.NewRequest(http.MethodGet, ts.URL+emptyDir+"/", nil)
 	if err != nil {
@@ -629,6 +563,7 @@ func TestCacheControlImmutable(t *testing.T) {
 func TestGoGetSupport(t *testing.T) {
 	ts, _, _ := newTestServerAndNode(t, nil)
 	t.Logf("test server url: %s", ts.URL)
+	defer ts.Close()
 
 	// mimic go-get
 	req, err := http.NewRequest(http.MethodGet, ts.URL+emptyDir+"?go-get=1", nil)
@@ -652,6 +587,7 @@ func TestVersion(t *testing.T) {
 	ns := mockNamesys{}
 	ts, _, _ := newTestServerAndNode(t, ns)
 	t.Logf("test server url: %s", ts.URL)
+	defer ts.Close()
 
 	req, err := http.NewRequest(http.MethodGet, ts.URL+"/version", nil)
 	if err != nil {
