@@ -392,7 +392,12 @@ func (api *UnixfsAPI) Get(ctx context.Context, p path.Path, opts ...options.Unix
 }
 
 func (api *UnixfsAPI) getReedSolomonFile(ctx context.Context, settings *options.UnixfsGetSettings,
-	p path.Path) (files.Node, error) {
+	p path.Path) (n files.Node, e error) {
+	defer func() {
+		if err := recover(); err != nil {
+			n, e = nil, fmt.Errorf("panic:%v", err)
+		}
+	}()
 	root, paths, err := splitPath(p)
 	if err != nil {
 		return nil, err
