@@ -16,6 +16,7 @@ import (
 	"time"
 
 	files "github.com/TRON-US/go-btfs-files"
+	"github.com/TRON-US/go-btfs/assets"
 	mfs "github.com/TRON-US/go-mfs"
 	coreiface "github.com/TRON-US/interface-go-btfs-core"
 	ipath "github.com/TRON-US/interface-go-btfs-core/path"
@@ -207,7 +208,7 @@ func (i *gatewayHandler) getOrHeadHandler(w http.ResponseWriter, r *http.Request
 	if r.Header.Get("Service-Worker") == "script" {
 		// Disallow Service Worker registration on namespace roots
 		// https://github.com/ipfs/go-ipfs/issues/4025
-		matched, _ := regexp.MatchString(`^/ip[fn]s/[^/]+$`, r.URL.Path)
+		matched, _ := regexp.MatchString(`^/bt[fn]s/[^/]+$`, r.URL.Path)
 		if matched {
 			err := fmt.Errorf("registration is not allowed for this scope")
 			webError(w, "navigator.serviceWorker", err, http.StatusBadRequest)
@@ -292,6 +293,21 @@ func (i *gatewayHandler) getOrHeadHandler(w http.ResponseWriter, r *http.Request
 
 	// Normal file/directory case: perform resolve
 	if !isReedSolomonSubdirOrFile {
+		// Resolve path to the final DAG node for the ETag
+		resolvedPath, err = i.api.ResolvePath(r.Context(), parsedPath)
+		switch err {
+		case nil:
+		case coreiface.ErrOffline:
+			webError(w, "btfs resolve -r "+escapedURLPath, err, http.StatusServiceUnavailable)
+			return
+		default:
+			if i.servePretty404IfPresent(w, r, parsedPath) {
+				return
+			}
+
+			webError(w, "btfs resolve -r "+escapedURLPath, err, http.StatusNotFound)
+			return
+		}
 		resolvedPath, dr, err = i.resolveAndGetFilesNode(r.Context(), w, r, parsedPath, escapedURLPath)
 		if err != nil {
 			// helper already handled webError
@@ -313,8 +329,33 @@ func (i *gatewayHandler) getOrHeadHandler(w http.ResponseWriter, r *http.Request
 		if !i.setupEntityTag(w, r, resolvedPath, urlPath) {
 			return
 		}
+
+		var responseEtag string
+
+		// we need to figure out whether this is a directory before doing most of the heavy lifting below
+		_, ok := dr.(files.Directory)
+
+		if ok && assets.BindataVersionHash != "" {
+			responseEtag = `"DirIndex-` + assets.BindataVersionHash + `_CID-` + resolvedPath.Cid().String() + `"`
+		} else {
+			responseEtag = `"` + resolvedPath.Cid().String() + `"`
+		}
+
+		// Check etag sent back to us
+		if r.Header.Get("If-None-Match") == responseEtag || r.Header.Get("If-None-Match") == `W/`+responseEtag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
+		i.addUserHeaders(w) // ok, _now_ write user's headers.
+		w.Header().Set("X-IPFS-Path", urlPath)
+		w.Header().Set("Etag", responseEtag)
 	}
 
+	// set these headers _after_ the error, for we may just not have it
+	// and don't want the client to cache a 500 response...
+	// and only if it's /ipfs!
+	// TODO: break this out when we split /ipfs /ipns routes.
 	modtime := time.Now()
 
 	if f, ok := dr.(files.File); ok {
@@ -398,8 +439,22 @@ func (i *gatewayHandler) getOrHeadHandler(w http.ResponseWriter, r *http.Request
 			size = humanize.Bytes(uint64(s))
 		}
 
+		hash := ""
+		if resolvedPath != nil {
+			if r, err := i.api.ResolvePath(r.Context(), ipath.Join(resolvedPath, dirit.Name())); err == nil {
+				// Path may not be resolved. Continue anyways.
+				hash = r.Cid().String()
+			}
+		}
+
 		// See comment above where originalUrlPath is declared.
-		di := directoryItem{size, dirit.Name(), gopath.Join(originalUrlPath, dirit.Name())}
+		di := directoryItem{
+			Size:      size,
+			Name:      dirit.Name(),
+			Path:      gopath.Join(originalUrlPath, dirit.Name()),
+			Hash:      hash,
+			ShortHash: shortHash(hash),
+		}
 		dirListing = append(dirListing, di)
 	}
 	if dirit.Err() != nil {
@@ -448,26 +503,37 @@ func (i *gatewayHandler) getOrHeadHandler(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	var hash string
-	if !strings.HasPrefix(urlPath, ipfsPathPrefix) {
-		hash = resolvedPath.Cid().String()
+	size := "?"
+	if s, err := dir.Size(); err == nil {
+		// Size may not be defined/supported. Continue anyways.
+		size = humanize.Bytes(uint64(s))
+	}
+
+	hash := ""
+	if resolvedPath != nil {
+		resolvedPath.Cid().String()
+	}
+
+	// Storage for gateway URL to be used when linking to other rootIDs. This
+	// will be blank unless subdomain resolution is being used for this request.
+	var gwURL string
+
+	// Get gateway hostname and build gateway URL.
+	if h, ok := r.Context().Value("gw-hostname").(string); ok {
+		gwURL = "//" + h
+	} else {
+		gwURL = ""
 	}
 
 	// See comment above where originalUrlPath is declared.
 	tplData := listingTemplateData{
-		Listing:  dirListing,
-		Path:     originalUrlPath,
-		BackLink: backLink,
-		Hash:     hash,
-	}
-
-	// See statusResponseWriter.WriteHeader
-	// and https://github.com/ipfs/go-ipfs/issues/7164
-	// Note: this needs to occur before listingTemplate.Execute otherwise we get
-	// superfluous response.WriteHeader call from prometheus/client_golang
-	if w.Header().Get("Location") != "" {
-		w.WriteHeader(http.StatusMovedPermanently)
-		return
+		GatewayURL:  gwURL,
+		Listing:     dirListing,
+		Size:        size,
+		Path:        urlPath,
+		Breadcrumbs: breadcrumbs(urlPath),
+		BackLink:    backLink,
+		Hash:        hash,
 	}
 
 	err = listingTemplate.Execute(w, tplData)

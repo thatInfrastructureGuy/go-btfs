@@ -23,9 +23,11 @@ type listingTemplateData struct {
 }
 
 type directoryItem struct {
-	Size string
-	Name string
-	Path string
+	Size      string
+	Name      string
+	Path      string
+	Hash      string
+	ShortHash string
 }
 
 type breadcrumb struct {
@@ -58,6 +60,9 @@ func breadcrumbs(urlPath string) []breadcrumb {
 }
 
 func shortHash(hash string) string {
+	if len(hash) < 4 {
+		return hash
+	}
 	return (hash[0:4] + "\u2026" + hash[len(hash)-4:])
 }
 

@@ -416,10 +416,8 @@ func (api *UnixfsAPI) getReedSolomonFile(ctx context.Context, settings *options.
 	}
 	node, err := unixfile.NewUnixfsFile(ctx, ds, nd,
 		unixfile.UnixfsFileOptions{Meta: settings.Metadata, RepairShards: settings.Repairs})
-	t := reflect.ValueOf(node)
-	m := t.MethodByName("Entries")
-	s := m.Call([]reflect.Value{})[0]
-	dit := s.Interface().(files.DirIterator)
+	dir := node.(*unixfile.RsDirectory)
+	dit := dir.Entries()
 	if !dit.Next() {
 		return nil, errors.New("not found")
 	}
@@ -437,10 +435,8 @@ func (api *UnixfsAPI) getReedSolomonFile(ctx context.Context, settings *options.
 				return nil, errors.New("not found")
 			}
 		}
-		t = reflect.ValueOf(dit.Node())
-		m = t.MethodByName("Entries")
-		s = m.Call([]reflect.Value{})[0]
-		dit = s.Interface().(files.DirIterator)
+		_t := dit.Node().(*unixfile.RsDirectory)
+		dit = _t.Entries()
 		if !dit.Next() {
 			return nil, errors.New("not found")
 		}
